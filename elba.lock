@@ -1,0 +1,4 @@
+[[packages]]
+id = 'linguini/48scheme@dir+/home/linguini/Desktop/idris/48scheme'
+version = '0.1.0'
+dependencies = []
