@@ -55,11 +55,18 @@ implementation Monoid e => Monad (ErrCollector e) where
 
 implementation (Monoid e, Monoid a) => Throwable e (ErrCollector e a) where
   throw err = MkErrCollector err neutral
-  
+
+implementation (Eq e, Monoid e, Monoid a) => Catchable e (ErrCollector e a) where
+  catch (MkErrCollector err x) f with (neutral == err) 
+    | True = MkErrCollector err x
+    | False = f err
+
 main : IO ()
 main = do
   printLn $ the (Either (List String) String) $ runErrCollector $ do
-    x <- MkErrCollector ["error : 1"] $ "1"
-    y <- throw ["error thrown"]
-    z <- MkErrCollector ["error : 2"] $ "2"
-    pure $ x <+> y <+> z
+    x <- MkErrCollector ["error : 1"] "1" `catch` \errs => do
+      y <- throw ["error thrown"]
+      z <- MkErrCollector ["error : 2"] "2"
+      w <- throw (the (List String) errs)
+      pure $ y <+> z <+> w
+    pure $ x
