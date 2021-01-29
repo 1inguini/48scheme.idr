@@ -1,25 +1,23 @@
 module Exception
 
 public export
-interface Exception e
+interface Throwable e ma where
+  throw : e -> ma
 
 public export
-interface (Monad m, Exception e) => MonadThrow e (m : Type -> Type) where
-  throw : e -> m a
+interface Throwable e ma => Catchable e ma where
+  catch : ma -> (e -> ma) -> ma
 
 public export
-interface MonadThrow e m => MonadCatch e (m : Type -> Type) where
-  catch : m a -> (e -> m a) -> m a
-
-public export
-implementation Exception e => MonadThrow e Maybe where
+implementation Throwable e (Maybe a) where
   throw _ = Nothing
 
 public export
-implementation Exception e => MonadThrow e (Either e) where
+implementation Throwable e (Either e a) where
   throw = Left
 
 public export
-implementation Exception e => MonadCatch e (Either e) where
+implementation Catchable e (Either e a) where
   catch (Left err) f = f err
   catch (Right x) _ = Right x
+
