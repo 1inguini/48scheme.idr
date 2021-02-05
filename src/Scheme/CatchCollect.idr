@@ -14,27 +14,27 @@ data ViewCatchable : (applicativeImpl : Applicative m, catchableImpl : Catchable
 
 export
 data CatchCollect :
-  (monadImplM : Monad m, catchableImplM : Catchable m t,
+  (applicativeImplM : Applicative m, catchableImplM : Catchable m t,
     monadImplN : Monad n, catchableImplN : Catchable n (ts : List t ** NonEmpty ts)) =>
   {view : (arb : Type) -> (mx : m arb) -> ViewCatchable {m=m} {a=arb} mx} ->
   (a : Type) -> Type where
   MkCC : m (n a) ->
     CatchCollect
-      @{monadImplM} @{catchableImplM}
+      @{applicativeImplM} @{catchableImplM}
       @{monadImplN} @{catchableImplN}
       {m} {n} {t} {view} a
 
 private
 unCC :
-  (monadImplM : Monad m, catchableImplM : Catchable m t,
+  (applicativeImplM : Applicative m, catchableImplM : Catchable m t,
     monadImplN : Monad n, catchableImplN : Catchable n (ls : List t ** NonEmpty ls)) =>
-  CatchCollect @{monadImplM} @{catchableImplM} @{monadImplN} @{catchableImplN} {view} a ->
+  CatchCollect @{applicativeImplM} @{catchableImplM} @{monadImplN} @{catchableImplN} {view} a ->
   m (n a)
 unCC (MkCC mnx) = mnx
 
 private
 squash :
-  (monadImplM : Monad m, catchableImplM : Catchable m t,
+  (applicativeImplM : Applicative m, catchableImplM : Catchable m t,
     monadImplN : Monad n, catchableImplN : Catchable n (ls : List t ** NonEmpty ls)) =>
   {mnx : m (n a)} -> ViewCatchable mnx -> n a
 squash {n} {a} (Thrown err) = throw {m = n} {a} ([err] ** IsNonEmpty)
@@ -42,19 +42,19 @@ squash (Success nx) = nx
 
 export
 runCatchCollect :
-  (applicativeImplM : Monad m, catchableImplM : Catchable m t,
+  (applicativeImplM : Applicative m, catchableImplM : Catchable m t,
     monadImplN : Monad n, catchableImplN : Catchable n (ls : List t ** NonEmpty ls)) =>
   CatchCollect @{applicativeImplM} @{catchableImplM} @{monadImplN} @{catchableImplN} {view} a -> n a
 runCatchCollect {view} (MkCC mnx) = squash $ view (n a) mnx
 
 private
-toNeverThrow :(applicativeImplM : Monad m, catchableImplM : Catchable m t,
+toNeverThrow :(applicativeImplM : Applicative m, catchableImplM : Catchable m t,
   monadImplN : Monad n, catchableImplN : Catchable n (ls : List t ** NonEmpty ls)) =>
   m (n a) -> m (n a)
 toNeverThrow mnx = mnx `catch` \err => pure $ throw ([err] ** IsNonEmpty)
 
 export
-collect : (applicativeImplM : Monad m, catchableImplM : Catchable m t,
+collect : (applicativeImplM : Applicative m, catchableImplM : Catchable m t,
   monadImplN : Monad n, catchableImplN : Catchable n (ls : List t ** NonEmpty ls)) =>
   m a ->
   CatchCollect
