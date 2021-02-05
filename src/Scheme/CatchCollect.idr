@@ -14,15 +14,23 @@ data ViewCatchable : (monadImpl : Monad m, catchableImpl : Catchable m t) => m a
 
 export
 data CatchCollect :
-  (monadImplM : Monad m, catchableImplM : Catchable m t, 
+  (monadImplM : Monad m, catchableImplM : Catchable m t,
     monadImplN : Monad n, catchableImplN : Catchable n (ts : List t ** NonEmpty ts)) =>
   {view : (arb : Type) -> (mx : m arb) -> ViewCatchable {m=m} {a=arb} mx} ->
-  Type -> Type where
-  MkCC : m (n a) -> 
+  (a : Type) -> Type where
+  MkCC : m (n a) ->
     CatchCollect
       @{monadImplM} @{catchableImplM}
       @{monadImplN} @{catchableImplN}
       {m} {n} {t} {view} a
+
+private
+unCC :
+  (monadImplM : Monad m, catchableImplM : Catchable m t,
+    monadImplN : Monad n, catchableImplN : Catchable n (ls : List t ** NonEmpty ls)) =>
+  CatchCollect @{monadImplM} @{catchableImplM} @{monadImplN} @{catchableImplN} {view} a ->
+  m (n a)
+unCC (MkCC mnx) = mnx
 
 private
 squash :
@@ -67,8 +75,8 @@ implementation Catchable
     @{monadImplM} @{catchableImplM}
     @{monadImplN} @{catchableImplN}
     {view}) t where
-  catch (MkCC mnxThrowable) func = 
-    let mnx = toNeverThrow mnxThrowable 
+  catch (MkCC mnxThrowable) func =
+    let mnx = toNeverThrow mnxThrowable
     in MkCC $ (\nx => catch nx (\(errs ** ok) => runCatchCollect $ func $ last {ok} errs)) <$> mnx
   throw err = MkCC $ pure $ throw ([err] ** IsNonEmpty)
 
@@ -93,6 +101,37 @@ implementation Applicative (CatchCollect @{monadImplM} @{catchableImplM} @{monad
         x <- nx
         pure $ f x))
 
+private
+maybeImpl :
+  (iface : Type) ->
+  {default (| Just %implementation, Nothing |) mmi : Maybe iface} ->
+  Maybe iface
+maybeImpl _ {mmi} = mmi
+
+example : (a : Type) ->
+  {default (|
+    Just %implementation,
+    Just 0,
+    Just [],
+    Just neutral,
+    Just default {- Effect.Default.defaut -},
+    Nothing |) mmi : Maybe a} -> Maybe a
+example _ {mmi} = mmi
+
+public export
+implementation Monad (CatchCollect @{monadImplM} @{catchableImplM} @{monadImplN} @{catchableImplN} {view}) where
+  (>>=) {a} (MkCC mnx) f = MkCC (do
+    nx <- toNeverThrow mnx
+    case example a of
+      Nothing => pure (nx >>= runCatchCollect . f)
+      Just val => do
+        nyFallback <- toNeverThrow $ unCC $ f val
+        pure (do
+          x <- nx `catch` \(errX :: errsX ** _) => do
+            errs <- (const errsX <$> nyFallback) `catch` \(errs ** _) => pure $ errsX <+> errs
+            throw (errX :: errs ** the (NonEmpty (errX :: errs)) IsNonEmpty)
+          runCatchCollect $ f x))
+
 -- private
 -- test : CatchCollect {m = Either String} {n = Either (ls : List String ** NonEmpty ls)} Nat
 -- test = (\x,y,z => sum [x,y,z])
@@ -100,16 +139,28 @@ implementation Applicative (CatchCollect @{monadImplM} @{catchableImplM} @{monad
 --   <*> collect (pure 12)
 --   <*> collect (throw "err2")
 
+-- private
+-- test : CatchCollect Nat
+--   {t = String}
+--   {m = Either String}
+--   {n = Either (ls : List String ** NonEmpty ls)}
+--   {view = \_ => CatchCollect.viewEither}
+-- test =
+--   [|
+--     (\x,y,z => sum [x,y,z])
+--     (collect (throw "err0"))
+--     (collect (pure 12))
+--     (collect (throw "err2"))
+--   |]
+
 private
 test : CatchCollect Nat
   {t = String}
   {m = Either String}
   {n = Either (ls : List String ** NonEmpty ls)}
   {view = \_ => CatchCollect.viewEither}
-test =
-  [|
-    (\x,y,z => sum [x,y,z])
-    (collect (throw "err0"))
-    (collect (pure 12))
-    (collect (throw "err2"))
-  |]
+test = do
+  x <- collect (throw "err0")
+  y <- collect (pure 12)
+  z <- collect (throw "err2")
+  pure $ sum [x,y,z]
