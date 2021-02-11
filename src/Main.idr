@@ -148,7 +148,7 @@ namespace repl
     (Maybe (Double -> Double -> Double)) ->
     (Maybe (ComplexD -> ComplexD -> ComplexD)) ->
     LispNumber -> LispNumber -> Interpreter {m} {n} LispNumber
-  --         Integer   Real      Complex
+  --         Integer   Real      ComplexD
   opToLispNumOp Nothing   Nothing   Nothing   x                  y                  = cLispNumThrow $ Default "Bad primitive"
   opToLispNumOp Nothing   Nothing   (Just op) x                  y                  = pure $ Lisp.Complex $ op (cast x) (cast y)
   opToLispNumOp Nothing   (Just op) Nothing   x@(Lisp.Complex _) y@(Lisp.Complex _) = cThrowTyMReal x *> cThrowTyMReal y
@@ -233,10 +233,21 @@ namespace repl
   foldMLispBinOp f (x :: xs@(_ :: _)) = foldlM f x xs
   foldMLispBinOp _ xs = collectThrow $ NumArgs GT 2 xs
 
+  lispBinOp : (Successable m Lisp.Error, Monad n, Successable n (ts : List Lisp.Error ** NonEmpty ts)) =>
+    (LispVal -> LispVal -> Lisp.Interpreter {m} {n} LispVal) ->
+    List.List LispVal -> Lisp.Interpreter {m} {n} LispVal
+  lispBinOp f [x, y] = f x y
+  lispBinOp _ xs = collectThrow $ NumArgs EQ 2 xs
+
   primitivesEnv : (Successable m Lisp.Error, Monad n, Successable n (ts : List Lisp.Error ** NonEmpty ts)) =>
     SortedMap String (List LispVal -> Lisp.Interpreter {m} {n} LispVal)
   primitivesEnv = fromList
-    [("+", foldMLispBinOp $ opToLispOp (Just (+)) (Just (+)) (Just (+)))]
+    [ ("+", foldMLispBinOp $ opToLispOp (Just (+)) (Just (+)) (Just (+)))
+    , ("-", foldMLispBinOp $ opToLispOp (Just (-)) (Just (-)) (Just (-)))
+    , ("*", foldMLispBinOp $ opToLispOp (Just (*)) (Just (*)) (Just (*)))
+    , ("/", foldMLispBinOp $ opToLispOp Nothing (Just (/)) (Just (/)))
+    , ("modulo", lispBinOp $ opToLispOp (Just mod) Nothing Nothing)
+    ]
 
   envLookup : (Successable m Lisp.Error, Monad n, Successable n (ts : List Lisp.Error ** NonEmpty ts)) =>
               String -> Lisp.Interpreter {m} {n} (List LispVal -> Lisp.Interpreter {m} {n} LispVal)
@@ -258,7 +269,9 @@ test = eval <$>
   [ Lisp.quote $ Lisp.List [Lisp.String "aaa", Lisp.String "bbb"]
   , Lisp.List [Lisp.Atom "+", Lisp.List [Lisp.String "aaa", Lisp.String "bbb"] ]
   , Lisp.List [Lisp.Atom "+", Lisp.String "aaa", Lisp.String "bbb" ]
-  , Lisp.List [Lisp.Atom "+", integer 1, integer 2, integer 3 ] ]
+  , Lisp.List [Lisp.Atom "+", integer 1, integer 2, integer 3 ]
+  , Lisp.List [Lisp.Atom "modulo", integer 2, integer 3 ]
+  ]
 
 main : IO ()
 main = ?main
