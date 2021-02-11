@@ -75,7 +75,6 @@ collectMonoid = collect neutral
 export
 collectThrow : (Successable m t, Monad n, Successable n (ts : List t ** NonEmpty ts)) =>
   Monoid a => t -> CatchCollect {m} {n} {t} a
-collectThrow = collectMonoid . throw
 
 public export
 implementation Functor (CatchCollect @{siN} @{miN} @{siM}) where

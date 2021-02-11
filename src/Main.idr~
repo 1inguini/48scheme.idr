@@ -258,7 +258,7 @@ test = eval <$>
   [ Lisp.quote $ Lisp.List [Lisp.String "aaa", Lisp.String "bbb"]
   , Lisp.List [Lisp.Atom "+", Lisp.List [Lisp.String "aaa", Lisp.String "bbb"] ]
   , Lisp.List [Lisp.Atom "+", Lisp.String "aaa", Lisp.String "bbb" ]
-  , Lisp.List [Lisp.Atom "+", integer 1, integer 2, integer 3 ] ]
+  , Lisp.List [Lisp.Atom "+", integer 12, complex (3.0 :+ 3) ] ]
 
 main : IO ()
 main = ?main
