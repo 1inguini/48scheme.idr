@@ -3,6 +3,7 @@ module Main
 import Pruviloj
 import Control.Catchable
 import Derive.Show
+import Data.Primitives.Views
 import Data.Complex
 import Data.SortedMap as SortedMap
 -- import Scheme.Exception
@@ -72,6 +73,7 @@ namespace Lisp
     | TypeMismatch String lisp
     | BadSpecialForm String lisp
     | UnboundVar String
+    | ZeroDivision
     | Default String
 
   Error : Type
@@ -219,13 +221,11 @@ namespace repl
   -- opToLispNumOp _         _         op (Lisp.Real    x) (Lisp.Complex y) = Lisp.Complex $ op (cast x) (cast y)
   -- opToLispNumOp _         _         op (Lisp.Complex x) y                = Lisp.Complex $ op (cast x) (cast y)
 
-  opToLispOp : (Successable m Lisp.Error, Monad n, Successable n (ts : List Lisp.Error ** NonEmpty ts)) =>
-    (Maybe (Integer -> Integer -> Integer)) ->
-    (Maybe (Double -> Double -> Double)) ->
-    (Maybe (ComplexD -> ComplexD -> ComplexD)) ->
+  lispNumOpToLispOp : (Successable m Lisp.Error, Monad n, Successable n (ts : List Lisp.Error ** NonEmpty ts)) =>
+    (LispNumber -> LispNumber -> Interpreter {m} {n} LispNumber) ->
     LispVal -> LispVal -> Lisp.Interpreter {m} {n} LispVal
-  opToLispOp opI opR opC (Lisp.Number x) (Lisp.Number y) = Lisp.Number <$> opToLispNumOp opI opR opC x y
-  opToLispOp _ _ _ x y = collectThrow {a = LispVal} (TypeMismatch "Number" x) *> collectThrow (TypeMismatch "Number" y)
+  lispNumOpToLispOp op (Lisp.Number x) (Lisp.Number y) = Lisp.Number <$> op x y
+  lispNumOpToLispOp _ x y = collectThrow {a = LispVal} (TypeMismatch "Number" x) *> collectThrow (TypeMismatch "Number" y)
 
   foldMLispBinOp : (Successable m Lisp.Error, Monad n, Successable n (ts : List Lisp.Error ** NonEmpty ts)) =>
     (LispVal -> LispVal -> Lisp.Interpreter {m} {n} LispVal) ->
@@ -239,14 +239,22 @@ namespace repl
   lispBinOp f [x, y] = f x y
   lispBinOp _ xs = collectThrow $ NumArgs EQ 2 xs
 
+  lispRem : (Successable m Lisp.Error, Monad n, Successable n (ts : List Lisp.Error ** NonEmpty ts)) =>
+    LispNumber -> LispNumber -> Interpreter {m} {n} LispNumber
+  lispRem (Lisp.Integer x) (Lisp.Integer y) with (divides x y)
+    lispRem (Lisp.Integer ((y * div) + rem)) (Lisp.Integer y) | (DivBy _) = pure $ Lisp.Integer rem
+    lispRem _ _ | (DivByZero) = cLispNumThrow ZeroDivision
+  lispRem x y = let err = cLispNumThrow . TypeMismatch "Integer" . Lisp.Number in err x *> err y
+
   primitivesEnv : (Successable m Lisp.Error, Monad n, Successable n (ts : List Lisp.Error ** NonEmpty ts)) =>
     SortedMap String (List LispVal -> Lisp.Interpreter {m} {n} LispVal)
   primitivesEnv = fromList
-    [ ("+", foldMLispBinOp $ opToLispOp (Just (+)) (Just (+)) (Just (+)))
-    , ("-", foldMLispBinOp $ opToLispOp (Just (-)) (Just (-)) (Just (-)))
-    , ("*", foldMLispBinOp $ opToLispOp (Just (*)) (Just (*)) (Just (*)))
-    , ("/", foldMLispBinOp $ opToLispOp Nothing (Just (/)) (Just (/)))
-    , ("modulo", lispBinOp $ opToLispOp (Just mod) Nothing Nothing)
+    [ ("+", foldMLispBinOp $ lispNumOpToLispOp $ opToLispNumOp (Just (+)) (Just (+)) (Just (+)))
+    , ("-", foldMLispBinOp $ lispNumOpToLispOp $ opToLispNumOp (Just (-)) (Just (-)) (Just (-)))
+    , ("*", foldMLispBinOp $ lispNumOpToLispOp $ opToLispNumOp (Just (*)) (Just (*)) (Just (*)))
+    , ("/", foldMLispBinOp $ lispNumOpToLispOp $ opToLispNumOp Nothing (Just (/)) (Just (/)))
+    -- , ("modulo", lispBinOp $ lispNumOpToLispOp $ opToLispNumOp (Just mod) Nothing Nothing)
+    , ("remainder", lispBinOp $ lispNumOpToLispOp lispRem)
     ]
 
   envLookup : (Successable m Lisp.Error, Monad n, Successable n (ts : List Lisp.Error ** NonEmpty ts)) =>
