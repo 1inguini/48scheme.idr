@@ -1,3 +1,5 @@
 /target
 *.ibc
 *.o
+*~
+*.fuse_hidden

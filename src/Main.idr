@@ -3,6 +3,7 @@ module Main
 import Pruviloj
 import Control.Catchable
 import Derive.Show
+import Data.Primitives.Views
 import Data.Complex
 import Data.SortedMap as SortedMap
 -- import Scheme.Exception
@@ -11,262 +12,315 @@ import Scheme.CatchCollect
 %default total
 %language ElabReflection
 
+private
 implementation Cast a a where
   cast = id
 
+export
 ComplexD : Type
 ComplexD = Complex Double
 
+export
 implementation Cast Integer ComplexD where
   cast = (:+ 0) . cast
 
+export
 implementation Cast Double ComplexD where
   cast = (:+ 0)
 
+%runElab deriveShow `{Ordering}
+
 namespace Lisp
-  ||| Number Type for LispVal
-  data LispNumber
-    = Complex ComplexD
-    | Real Double
-    | Integer Integer
 
-  %runElab deriveShow `{LispNumber}
+  namespace Number
+    ||| Number Type for Lisp.Value
+    public export
+    data Ty
+      = Complex
+      | Real
+      | Integer
 
-  data LispVal
-    = Atom String
-    | List (List LispVal)
-    | DottedList (List LispVal) LispVal
-    | Number LispNumber
-    | String String
-    | Bool Bool
+    %runElab deriveShow `{Number.Ty}
 
-  implementation Eq LispVal where
-    (==) (Lisp.List []) (Lisp.List []) = True
-    (==) _ _ = False
+    export
+    representation : Number.Ty -> Type
+    representation Number.Complex = ComplexD
+    representation Number.Real    = Double
+    representation Number.Integer = Integer
 
-  showLispVal : LispVal -> String
-  showLispVal (Lisp.Atom atm) = atm
-  showLispVal (Lisp.List ls) = "(" <+> unwords (assert_total showLispVal <$> ls) <+> ")"
-  showLispVal (Lisp.DottedList ls x) =
-    "(" <+> unwords (assert_total showLispVal <$> ls) <+> assert_total (showLispVal x) <+> ")"
-  showLispVal (Lisp.Number num) = show num
-  showLispVal (Lisp.String str) = "\"" <+> str <+> "\""
-  showLispVal (Lisp.Bool True) = "#t"
-  showLispVal (Lisp.Bool False) = "#f"
+  public export
+  data Ty
+    = Atom
+    | List
+    | DottedList
+    | Number Number.Ty
+    | String
+    | Bool
 
-  implementation Show LispVal where
-    show = showLispVal
+  %runElab deriveShow `{Lisp.Ty}
 
-  implementation Semigroup LispVal where
-    (<+>) x y = Lisp.List $ toList x <+> toList y
+  mutual
+    public export
+    data Value : Type where
+      ValueOf : (lty : Lisp.Ty) -> (val : representation lty) -> Lisp.Value
+
+    export
+    representation : Lisp.Ty -> Type
+    representation Lisp.Atom = String
+    representation Lisp.List = List Lisp.Value
+    representation Lisp.DottedList = (List Lisp.Value, Lisp.Value)
+    representation (Lisp.Number nty) = Number.representation nty
+    representation Lisp.String = String
+    representation Lisp.Bool = Bool
+
+  implementation Show Lisp.Value where
+    show (ValueOf Lisp.Atom atm) = atm
+    show (ValueOf Lisp.List ls) = "(" <+> unwords (assert_total show <$> ls) <+> ")"
+    show (ValueOf Lisp.DottedList (ls, x)) =
+      concat ["(", unwords (assert_total show <$> ls), " . ", assert_total (show x), ")"]
+    show (ValueOf (Lisp.Number Number.Complex) num) = show num
+    show (ValueOf (Lisp.Number Number.Real) num) = show num
+    show (ValueOf (Lisp.Number Number.Integer) num) = show num
+    show (ValueOf Lisp.String str) = "\"" <+> str <+> "\""
+    show (ValueOf Lisp.Bool True) = "#t"
+    show (ValueOf Lisp.Bool False) = "#f"
+
+  implementation Semigroup Lisp.Value where
+    (<+>) x y = ValueOf Lisp.List $ toList x <+> toList y
       where
-        toList : LispVal -> List LispVal
-        toList (Lisp.List ls) = ls
+        toList : Lisp.Value -> List Lisp.Value
+        toList (ValueOf Lisp.List ls) = ls
         toList val = [val]
 
-  implementation Monoid LispVal where
-    neutral = Lisp.List []
+  implementation Monoid Lisp.Value where
+    neutral = ValueOf Lisp.List []
 
-  data Error' lisp
-    = NumArgs Ordering Nat (List lisp)
-    | TypeMismatch String lisp
-    | BadSpecialForm String lisp
-    | UnboundVar String
-    | Default String
+  namespace Util
+    atom : String -> Lisp.Value
+    atom = ValueOf Lisp.Atom
 
-  Error : Type
-  Error = Error' LispVal
+    list : List Lisp.Value -> Lisp.Value
+    list = ValueOf Lisp.List
 
-  Interpreter : (Successable m Lisp.Error, Monad n, Successable n (ts : List Lisp.Error ** NonEmpty ts)) =>
-    Type -> Type
-  Interpreter {m} {n} a = CatchCollect {m} {n} {t = Lisp.Error} a
+    dottedList : List Lisp.Value -> Lisp.Value -> Lisp.Value
+    dottedList xs x = ValueOf Lisp.DottedList (xs, x)
 
-  quote : LispVal -> LispVal
-  quote ls = Lisp.List [Lisp.Atom "quote", ls]
+    integer : Integer -> Lisp.Value
+    integer = ValueOf (Lisp.Number Number.Integer)
 
-  integer : Integer -> LispVal
-  integer = Lisp.Number . Lisp.Integer
+    real : Double -> Lisp.Value
+    real = ValueOf (Lisp.Number Number.Real)
 
-  real : Double -> LispVal
-  real = Lisp.Number . Lisp.Real
+    complex : ComplexD -> Lisp.Value
+    complex = ValueOf (Lisp.Number Number.Complex)
 
-  complex : ComplexD -> LispVal
-  complex = Lisp.Number . Lisp.Complex
+    string : String -> Lisp.Value
+    string = ValueOf Lisp.String
 
-%runElab deriveShow `{Ordering}
-%runElab deriveShow `{Lisp.Error'}
+    bool : Bool -> Lisp.Value
+    bool = ValueOf Lisp.Bool
 
-implementation Cast LispNumber ComplexD where
-  cast (Lisp.Complex x) = x
-  cast (Lisp.Real x) = cast x
-  cast (Lisp.Integer x) = cast x
+    quote : Lisp.Value -> Lisp.Value
+    quote ls = ValueOf Lisp.List [ValueOf Lisp.Atom "quote", ls]
 
-lispNumToDouble :
-  (Monad m, Catchable m Lisp.Error) =>
-  LispNumber -> m Double
-lispNumToDouble (Lisp.Complex (x :+ 0.0)) = pure x
-lispNumToDouble x@(Lisp.Complex _) = throw $ TypeMismatch "Real" (Lisp.Number x)
-lispNumToDouble (Lisp.Real x) = pure x
-lispNumToDouble (Lisp.Integer x) = pure $ cast x
+  namespace Interpreter
 
-lispNumToInteger :
-  (Monad m, Catchable m Lisp.Error) =>
-  LispNumber -> m Integer
-lispNumToInteger x@(Lisp.Complex _) = throw $ TypeMismatch "Integer" (Lisp.Number x)
-lispNumToInteger x@(Lisp.Real _) = throw $ TypeMismatch "Integer" (Lisp.Number x)
-lispNumToInteger (Lisp.Integer x) = pure x
+    public export
+    data Error
+      = NumArgs Ordering Nat (List Lisp.Value)
+      | TypeMismatch Lisp.Ty (Lisp.Value)
+      | TypeMismatchNumber (Lisp.Value)
+      | BadSpecialForm String (Lisp.Value)
+      | UnboundVar String
+      | ZeroDivision
+      | Default String
 
-hasImplementation : (constraint : Type) ->
-  { default (| Just %implementation, Nothing |) impl : Maybe constraint } ->
-  Maybe constraint
-hasImplementation _ {impl} = impl
+    %runElab deriveShow `{Interpreter.Error}
 
-namespace repl
+    export
+    Interpreter : (Successable m Interpreter.Error, Monad n, Successable n (ts : List Interpreter.Error ** NonEmpty ts)) =>
+      Type -> Type
+    Interpreter {m} {n} a = CatchCollect {m} {n} {t = Interpreter.Error} a
 
-  private
-  cLispNumThrow : (Successable m Lisp.Error, Monad n, Successable n (ts : List Lisp.Error ** NonEmpty ts)) =>
-    Lisp.Error -> Interpreter {m} {n} LispNumber
-  cLispNumThrow = collect (Lisp.Integer 0) . throw {m}
+    export
+    valueToComplex : (Applicative m, Catchable m Interpreter.Error) =>
+      Lisp.Value -> m ComplexD
+    valueToComplex (ValueOf (Lisp.Number Number.Complex) x) = pure x
+    valueToComplex (ValueOf (Lisp.Number Number.Real) x) = pure $ cast x
+    valueToComplex (ValueOf (Lisp.Number Number.Integer) x) = pure $ cast x
+    valueToComplex x = throw $ TypeMismatch (Lisp.Number Number.Complex) x
 
-  private
-  cThrowTyMComplex : (Successable m Lisp.Error, Monad n, Successable n (ts : List Lisp.Error ** NonEmpty ts)) =>
-    LispNumber -> Interpreter {m} {n} LispNumber
-  cThrowTyMComplex = cLispNumThrow . TypeMismatch "Complex" . Lisp.Number
+    export
+    valueToDouble : (Applicative m, Catchable m Interpreter.Error) =>
+      Lisp.Value -> m Double
+    valueToDouble (ValueOf (Lisp.Number Number.Real) x) = pure $ cast x
+    valueToDouble (ValueOf (Lisp.Number Number.Integer) x) = pure $ cast x
+    valueToDouble x = throw $ TypeMismatch (Lisp.Number Number.Real) x
 
-  private
-  cThrowTyMReal : (Successable m Lisp.Error, Monad n, Successable n (ts : List Lisp.Error ** NonEmpty ts)) =>
-    LispNumber -> Interpreter {m} {n} LispNumber
-  cThrowTyMReal = cLispNumThrow . TypeMismatch "Real" . Lisp.Number
+    export
+    valueToInteger : (Applicative m, Catchable m Interpreter.Error) =>
+      Lisp.Value -> m Integer
+    valueToInteger (ValueOf (Lisp.Number Number.Real) x) = pure $ cast x
+    valueToInteger (ValueOf (Lisp.Number Number.Integer) x) = pure $ cast x
+    valueToInteger x = throw $ TypeMismatch (Lisp.Number Number.Integer) x
 
-  private
-  cThrowTyMInteger : (Successable m Lisp.Error, Monad n, Successable n (ts : List Lisp.Error ** NonEmpty ts)) =>
-    LispNumber -> Interpreter {m} {n} LispNumber
-  cThrowTyMInteger = cLispNumThrow . TypeMismatch "Integer" . Lisp.Number
+    export
+    opToLispOp : (Successable m Interpreter.Error, Monad n, Successable n (ts : List Interpreter.Error ** NonEmpty ts)) =>
+      (Maybe (Integer -> Integer -> Integer)) ->
+      (Maybe (Double -> Double -> Double)) ->
+      (Maybe (ComplexD -> ComplexD -> ComplexD)) ->
+      Lisp.Value -> Lisp.Value -> Interpreter {m} {n} Lisp.Value
+    --         Integer   Real      ComplexD
+    opToLispOp Nothing   Nothing   Nothing   x                                          y                                          = collectThrow $ Default "Bad primitive"
+    opToLispOp Nothing   Nothing   (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op x y
+    opToLispOp Nothing   Nothing   (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ complex $ op x (cast y)
+    opToLispOp Nothing   Nothing   (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ complex $ op x (cast y)
+    opToLispOp Nothing   Nothing   (Just op)   (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op (cast x) y
+    opToLispOp Nothing   Nothing   (Just op)   (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ complex $ op (cast x) (cast y)
+    opToLispOp Nothing   Nothing   (Just op)   (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ complex $ op (cast x) (cast y)
+    opToLispOp Nothing   Nothing   (Just op)   (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op (cast x) y
+    opToLispOp Nothing   Nothing   (Just op)   (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ complex $ op (cast x) (cast y)
+    opToLispOp Nothing   Nothing   (Just op)   (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ complex $ op (cast x) (cast y)
+    opToLispOp Nothing   (Just op) Nothing   x@(ValueOf (Lisp.Number Number.Complex) _) y@(ValueOf (Lisp.Number Number.Complex) _) = collectThrow {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Real) x) *>
+                                                                                                                                     collectThrow {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Real) y)
+    opToLispOp Nothing   (Just op) Nothing   x@(ValueOf (Lisp.Number Number.Complex) _)   (ValueOf (Lisp.Number Number.Real)    _) = collectThrow {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Real) x)
+    opToLispOp Nothing   (Just op) Nothing   x@(ValueOf (Lisp.Number Number.Complex) _) y@(ValueOf (Lisp.Number Number.Integer) _) = collectThrow {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) x) *>
+                                                                                                                                     collectThrow {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Real) y)
+    opToLispOp Nothing   (Just op) Nothing     (ValueOf (Lisp.Number Number.Real)    _) y@(ValueOf (Lisp.Number Number.Complex) _) = collectThrow {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Real) y)
+    opToLispOp Nothing   (Just op) Nothing     (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ real $ op x y
+    opToLispOp Nothing   (Just op) Nothing     (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ real $ op x (cast y)
+    opToLispOp Nothing   (Just op) Nothing     (ValueOf (Lisp.Number Number.Integer) _) y@(ValueOf (Lisp.Number Number.Complex) _) = collectThrow (TypeMismatch (Lisp.Number Number.Integer) y)
+    opToLispOp Nothing   (Just op) Nothing     (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ real $ op (cast x) y
+    opToLispOp Nothing   (Just op) Nothing     (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ real $ op (cast x) (cast y)
+    opToLispOp Nothing   (Just _)  (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op x y
+    opToLispOp Nothing   (Just _)  (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ complex $ op x (cast y)
+    opToLispOp Nothing   (Just _)  (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ complex $ op x (cast y)
+    opToLispOp Nothing   (Just _)  (Just op)   (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op (cast x) y
+    opToLispOp Nothing   (Just op) (Just _)    (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ real $ op x y
+    opToLispOp Nothing   (Just op) (Just _)    (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ real $ op x (cast y)
+    opToLispOp Nothing   (Just _)  (Just op)   (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op (cast x) y
+    opToLispOp Nothing   (Just op) (Just _)    (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ real $ op (cast x) y
+    opToLispOp Nothing   (Just op) (Just _)    (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ real $ op (cast x) (cast y)
+    opToLispOp (Just _)  Nothing   Nothing   x@(ValueOf (Lisp.Number Number.Complex) _) y@(ValueOf (Lisp.Number Number.Complex) _) = collectThrow {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) x) *>
+                                                                                                                                     collectThrow {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) y)
+    opToLispOp (Just _)  Nothing   Nothing   x@(ValueOf (Lisp.Number Number.Complex) _) y@(ValueOf (Lisp.Number Number.Real)    _) = collectThrow {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) x) *>
+                                                                                                                                     collectThrow {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) y)
+    opToLispOp (Just _)  Nothing   Nothing   x@(ValueOf (Lisp.Number Number.Complex) _)   (ValueOf (Lisp.Number Number.Integer) _) = collectThrow {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) x)
+    opToLispOp (Just _)  Nothing   Nothing   x@(ValueOf (Lisp.Number Number.Real)    _) y@(ValueOf (Lisp.Number Number.Complex) _) = collectThrow {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) x) *>
+                                                                                                                                     collectThrow {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) y)
+    opToLispOp (Just _)  Nothing   Nothing   x@(ValueOf (Lisp.Number Number.Real)    _) y@(ValueOf (Lisp.Number Number.Real)    _) = collectThrow {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) x) *>
+                                                                                                                                     collectThrow {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) y)
+    opToLispOp (Just _)  Nothing   Nothing   x@(ValueOf (Lisp.Number Number.Real)    _)   (ValueOf (Lisp.Number Number.Integer) _) = collectThrow {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) x)
+    opToLispOp (Just _)  Nothing   Nothing     (ValueOf (Lisp.Number Number.Integer) _) y@(ValueOf (Lisp.Number Number.Complex) _) = collectThrow {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) y)
+    opToLispOp (Just _)  Nothing   Nothing     (ValueOf (Lisp.Number Number.Integer) _) y@(ValueOf (Lisp.Number Number.Real)    _) = collectThrow {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) y)
+    opToLispOp (Just op) Nothing   Nothing     (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ integer $ op x y
+    opToLispOp (Just _)  Nothing   (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op x y
+    opToLispOp (Just _)  Nothing   (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ complex $ op x (cast y)
+    opToLispOp (Just _)  Nothing   (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ complex $ op x (cast y)
+    opToLispOp (Just _)  Nothing   (Just op)   (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op (cast x) y
+    opToLispOp (Just _)  Nothing   (Just op)   (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ complex $ op (cast x) (cast y)
+    opToLispOp (Just _)  Nothing   (Just op)   (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ complex $ op (cast x) (cast y)
+    opToLispOp (Just _)  Nothing   (Just op)   (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op (cast x) y
+    opToLispOp (Just _)  Nothing   (Just op)   (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ complex $ op (cast x) (cast y)
+    opToLispOp (Just op) Nothing   (Just _)    (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ integer $ op x y
+    opToLispOp (Just _)  (Just _)  Nothing   x@(ValueOf (Lisp.Number Number.Complex) _) y@(ValueOf (Lisp.Number Number.Complex) _) = collectThrow {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Real) x) *>
+                                                                                                                                     collectThrow {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Real) y)
+    opToLispOp (Just _)  (Just _)  Nothing   x@(ValueOf (Lisp.Number Number.Complex) _) y@(ValueOf (Lisp.Number Number.Real)    _) = collectThrow {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Real) x)
+    opToLispOp (Just _)  (Just _)  Nothing   x@(ValueOf (Lisp.Number Number.Complex) _) y@(ValueOf (Lisp.Number Number.Integer) _) = collectThrow {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Real) x)
+    opToLispOp (Just _)  (Just _)  Nothing     (ValueOf (Lisp.Number Number.Real)    _) y@(ValueOf (Lisp.Number Number.Complex) _) = collectThrow {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Real) y)
+    opToLispOp (Just _)  (Just op) Nothing     (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ real $ op x y
+    opToLispOp (Just _)  (Just op) Nothing     (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ real $ op x (cast y)
+    opToLispOp (Just _)  (Just _)  Nothing     (ValueOf (Lisp.Number Number.Integer) _) y@(ValueOf (Lisp.Number Number.Complex) _) = collectThrow (TypeMismatch (Lisp.Number Number.Integer) y)
+    opToLispOp (Just _)  (Just op) Nothing     (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ real $ op (cast x) y
+    opToLispOp (Just op) (Just _)  Nothing     (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ integer $ op x y
+    opToLispOp (Just _)  (Just _)  (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op (cast x) y
+    opToLispOp (Just _)  (Just _)  (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ complex $ op (cast x) (cast y)
+    opToLispOp (Just _)  (Just _)  (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ complex $ op (cast x) (cast y)
+    opToLispOp (Just _)  (Just _)  (Just op)   (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op (cast x) y
+    opToLispOp (Just _)  (Just op) (Just _)    (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ real $ op x y
+    opToLispOp (Just _)  (Just op) (Just _)    (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ real $ op x (cast y)
+    opToLispOp (Just _)  (Just _)  (Just op)   (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op (cast x) y
+    opToLispOp (Just _)  (Just op) (Just _)    (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ real $ op (cast x) y
+    opToLispOp (Just op) (Just _)  (Just _)    (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ integer $ op x y
+    opToLispOp _         _         _         x                                            (ValueOf (Lisp.Number _)              _) = collectThrow {a=Lisp.Value} (TypeMismatchNumber x)
+    opToLispOp _         _         _           (ValueOf (Lisp.Number _)              _) y                                          = collectThrow {a=Lisp.Value} (TypeMismatchNumber y)
+    opToLispOp _         _         _         x                                          y                                          = collectThrow {a=Lisp.Value} (TypeMismatchNumber x) *>
+                                                                                                                                     collectThrow {a=Lisp.Value} (TypeMismatchNumber x)
+    private
+    foldMLispBinOp :
+      (Successable m Interpreter.Error, Monad n, Successable n (ts : List Interpreter.Error ** NonEmpty ts)) =>
+      (Lisp.Value -> Lisp.Value -> Interpreter {m} {n} Lisp.Value) ->
+      List Lisp.Value -> Interpreter {m} {n} Lisp.Value
+    foldMLispBinOp f (x :: xs@(_ :: _)) = foldlM f x xs
+    foldMLispBinOp _ xs = collectThrow $ NumArgs GT 2 xs
 
-  opToLispNumOp : (Successable m Lisp.Error, Monad n, Successable n (ts : List Lisp.Error ** NonEmpty ts)) =>
-    (Maybe (Integer -> Integer -> Integer)) ->
-    (Maybe (Double -> Double -> Double)) ->
-    (Maybe (ComplexD -> ComplexD -> ComplexD)) ->
-    LispNumber -> LispNumber -> Interpreter {m} {n} LispNumber
-  --         Integer   Real      Complex
-  opToLispNumOp Nothing   Nothing   Nothing   x                  y                  = cLispNumThrow $ Default "Bad primitive"
-  opToLispNumOp Nothing   Nothing   (Just op) x                  y                  = pure $ Lisp.Complex $ op (cast x) (cast y)
-  opToLispNumOp Nothing   (Just op) Nothing   x@(Lisp.Complex _) y@(Lisp.Complex _) = cThrowTyMReal x *> cThrowTyMReal y
-  opToLispNumOp Nothing   (Just op) Nothing   x@(Lisp.Complex _)   (Lisp.Real    _) = cThrowTyMReal x
-  opToLispNumOp Nothing   (Just op) Nothing   x@(Lisp.Complex _) y@(Lisp.Integer _) = cThrowTyMInteger x *> cThrowTyMReal y
-  opToLispNumOp Nothing   (Just op) Nothing     (Lisp.Real    _) y@(Lisp.Complex _) = cThrowTyMReal y
-  opToLispNumOp Nothing   (Just op) Nothing     (Lisp.Real    x)   (Lisp.Real    y) = pure $ Lisp.Real $ op x y
-  opToLispNumOp Nothing   (Just op) Nothing     (Lisp.Real    x)   (Lisp.Integer y) = pure $ Lisp.Real $ op x (cast y)
-  opToLispNumOp Nothing   (Just op) Nothing     (Lisp.Integer _) y@(Lisp.Complex _) = cThrowTyMInteger y
-  opToLispNumOp Nothing   (Just op) Nothing     (Lisp.Integer x)   (Lisp.Real    y) = pure $ Lisp.Real $ op (cast x) y
-  opToLispNumOp Nothing   (Just op) Nothing     (Lisp.Integer x)   (Lisp.Integer y) = pure $ Lisp.Real $ op (cast x) (cast y)
-  opToLispNumOp Nothing   (Just _)  (Just op)   (Lisp.Complex x)   (Lisp.Complex y) = pure $ Lisp.Complex $ op x y
-  opToLispNumOp Nothing   (Just _)  (Just op)   (Lisp.Complex x)   (Lisp.Real    y) = pure $ Lisp.Complex $ op x (cast y)
-  opToLispNumOp Nothing   (Just _)  (Just op)   (Lisp.Complex x)   (Lisp.Integer y) = pure $ Lisp.Complex $ op x (cast y)
-  opToLispNumOp Nothing   (Just _)  (Just op)   (Lisp.Real    x)   (Lisp.Complex y) = pure $ Lisp.Complex $ op (cast x) y
-  opToLispNumOp Nothing   (Just op) (Just _)    (Lisp.Real    x)   (Lisp.Real    y) = pure $ Lisp.Real $ op x y
-  opToLispNumOp Nothing   (Just op) (Just _)    (Lisp.Real    x)   (Lisp.Integer y) = pure $ Lisp.Real $ op x (cast y)
-  opToLispNumOp Nothing   (Just _)  (Just op)   (Lisp.Integer x)   (Lisp.Complex y) = pure $ Lisp.Complex $ op (cast x) y
-  opToLispNumOp Nothing   (Just op) (Just _)    (Lisp.Integer x)   (Lisp.Real    y) = pure $ Lisp.Real $ op (cast x) y
-  opToLispNumOp Nothing   (Just op) (Just _)    (Lisp.Integer x)   (Lisp.Integer y) = pure $ Lisp.Real $ op (cast x) (cast y)
-  opToLispNumOp (Just _)  Nothing   Nothing   x@(Lisp.Complex _) y@(Lisp.Complex _) = cThrowTyMInteger x *> cThrowTyMInteger y
-  opToLispNumOp (Just _)  Nothing   Nothing   x@(Lisp.Complex _) y@(Lisp.Real    _) = cThrowTyMInteger x *> cThrowTyMInteger y
-  opToLispNumOp (Just _)  Nothing   Nothing   x@(Lisp.Complex _)   (Lisp.Integer _) = cThrowTyMInteger x
-  opToLispNumOp (Just _)  Nothing   Nothing   x@(Lisp.Real    _) y@(Lisp.Complex _) = cThrowTyMInteger x *> cThrowTyMInteger y
-  opToLispNumOp (Just _)  Nothing   Nothing   x@(Lisp.Real    _) y@(Lisp.Real    _) = cThrowTyMInteger x *> cThrowTyMInteger y
-  opToLispNumOp (Just _)  Nothing   Nothing   x@(Lisp.Real    _)   (Lisp.Integer _) = cThrowTyMInteger x
-  opToLispNumOp (Just _)  Nothing   Nothing     (Lisp.Integer _) y@(Lisp.Complex _) = cThrowTyMInteger y
-  opToLispNumOp (Just _)  Nothing   Nothing     (Lisp.Integer _) y@(Lisp.Real    _) = cThrowTyMInteger y
-  opToLispNumOp (Just op) Nothing   Nothing     (Lisp.Integer x)   (Lisp.Integer y) = pure $ Lisp.Integer $ op x y
-  opToLispNumOp (Just _)  Nothing   (Just op)   (Lisp.Complex x)   (Lisp.Complex y) = pure $ Lisp.Complex $ op x y
-  opToLispNumOp (Just _)  Nothing   (Just op)   (Lisp.Complex x)   (Lisp.Real    y) = pure $ Lisp.Complex $ op x (cast y)
-  opToLispNumOp (Just _)  Nothing   (Just op)   (Lisp.Complex x)   (Lisp.Integer y) = pure $ Lisp.Complex $ op x (cast y)
-  opToLispNumOp (Just _)  Nothing   (Just op)   (Lisp.Real    x)   (Lisp.Complex y) = pure $ Lisp.Complex $ op (cast x) y
-  opToLispNumOp (Just _)  Nothing   (Just op)   (Lisp.Real    x)   (Lisp.Real    y) = pure $ Lisp.Complex $ op (cast x) (cast y)
-  opToLispNumOp (Just _)  Nothing   (Just op)   (Lisp.Real    x)   (Lisp.Integer y) = pure $ Lisp.Complex $ op (cast x) (cast y)
-  opToLispNumOp (Just _)  Nothing   (Just op)   (Lisp.Integer x)   (Lisp.Complex y) = pure $ Lisp.Complex $ op (cast x) y
-  opToLispNumOp (Just _)  Nothing   (Just op)   (Lisp.Integer x)   (Lisp.Real    y) = pure $ Lisp.Complex $ op (cast x) (cast y)
-  opToLispNumOp (Just op) Nothing   (Just _)    (Lisp.Integer x)   (Lisp.Integer y) = pure $ Lisp.Integer $ op x y
-  opToLispNumOp (Just _)  (Just _)  Nothing   x@(Lisp.Complex _) y@(Lisp.Complex _) = cThrowTyMReal x *> cThrowTyMReal y
-  opToLispNumOp (Just _)  (Just _)  Nothing   x@(Lisp.Complex _) y@(Lisp.Real    _) = cThrowTyMReal x
-  opToLispNumOp (Just _)  (Just _)  Nothing   x@(Lisp.Complex _) y@(Lisp.Integer _) = cThrowTyMInteger x
-  opToLispNumOp (Just _)  (Just _)  Nothing     (Lisp.Real    _) y@(Lisp.Complex _) = cThrowTyMReal y
-  opToLispNumOp (Just _)  (Just op) Nothing     (Lisp.Real    x)   (Lisp.Real    y) = pure $ Lisp.Real $ op x y
-  opToLispNumOp (Just _)  (Just op) Nothing     (Lisp.Real    x)   (Lisp.Integer y) = pure $ Lisp.Real $ op x (cast y)
-  opToLispNumOp (Just _)  (Just _)  Nothing     (Lisp.Integer _) y@(Lisp.Complex _) = cThrowTyMInteger y
-  opToLispNumOp (Just _)  (Just op) Nothing     (Lisp.Integer x)   (Lisp.Real    y) = pure $ Lisp.Real $ op (cast x) y
-  opToLispNumOp (Just op) (Just _)  Nothing     (Lisp.Integer x)   (Lisp.Integer y) = pure $ Lisp.Integer $ op x y
-  opToLispNumOp (Just _)  (Just _)  (Just op)   (Lisp.Complex x)   (Lisp.Complex y) = pure $ Lisp.Complex $ op (cast x) y
-  opToLispNumOp (Just _)  (Just _)  (Just op)   (Lisp.Complex x)   (Lisp.Real    y) = pure $ Lisp.Complex $ op (cast x) (cast y)
-  opToLispNumOp (Just _)  (Just _)  (Just op)   (Lisp.Complex x)   (Lisp.Integer y) = pure $ Lisp.Complex $ op (cast x) (cast y)
-  opToLispNumOp (Just _)  (Just _)  (Just op)   (Lisp.Real    x)   (Lisp.Complex y) = pure $ Lisp.Complex $ op (cast x) y
-  opToLispNumOp (Just _)  (Just op) (Just _)    (Lisp.Real    x)   (Lisp.Real    y) = pure $ Lisp.Real $ op x y
-  opToLispNumOp (Just _)  (Just op) (Just _)    (Lisp.Real    x)   (Lisp.Integer y) = pure $ Lisp.Real $ op x (cast y)
-  opToLispNumOp (Just _)  (Just _)  (Just op)   (Lisp.Integer x)   (Lisp.Complex y) = pure $ Lisp.Complex $ op (cast x) y
-  opToLispNumOp (Just _)  (Just op) (Just _)    (Lisp.Integer x)   (Lisp.Real    y) = pure $ Lisp.Real $ op (cast x) y
-  opToLispNumOp (Just op) (Just _)  (Just _)    (Lisp.Integer x)   (Lisp.Integer y) = pure $ Lisp.Integer $ op x y
+    private
+    lispBinOp :
+      (Successable m Interpreter.Error, Monad n, Successable n (ts : List Interpreter.Error ** NonEmpty ts)) =>
+      (Lisp.Value -> Lisp.Value -> Interpreter {m} {n} Lisp.Value) ->
+      List.List Lisp.Value -> Interpreter {m} {n} Lisp.Value
+    lispBinOp f [x, y] = f x y
+    lispBinOp _ xs = collectThrow $ NumArgs EQ 2 xs
 
-  -- opToLispNumOp (Just op) _         _  (Lisp.Integer x) (Lisp.Integer y) = Lisp.Integer $ op (cast x) (cast y)
-  -- opToLispNumOp Nothing   (Just op) _  (Lisp.Integer x) (Lisp.Integer y) = Lisp.Real    $ op (cast x) (cast y)
-  -- opToLispNumOp Nothing   Nothing   op (Lisp.Integer x) (Lisp.Integer y) = Lisp.Complex $ op (cast x) (cast y)
-  -- opToLispNumOp _         (Just op) _  (Lisp.Integer x) (Lisp.Real    y) = Lisp.Real    $ op (cast x) (cast y)
-  -- opToLispNumOp _         Nothing   op (Lisp.Integer x) (Lisp.Real    y) = Lisp.Complex $ op (cast x) (cast y)
-  -- opToLispNumOp _         _         op (Lisp.Integer x) (Lisp.Complex y) = Lisp.Complex $ op (cast x) (cast y)
-  -- opToLispNumOp _         (Just op) _  (Lisp.Real    x) (Lisp.Integer y) = Lisp.Real    $ op (cast x) (cast y)
-  -- opToLispNumOp _         Nothing   op (Lisp.Real    x) (Lisp.Integer y) = Lisp.Complex $ op (cast x) (cast y)
-  -- opToLispNumOp _         (Just op) _  (Lisp.Real    x) (Lisp.Real    y) = Lisp.Real    $ op (cast x) (cast y)
-  -- opToLispNumOp _         _         op (Lisp.Real    x) (Lisp.Real    y) = Lisp.Complex $ op (cast x) (cast y)
-  -- opToLispNumOp _         _         op (Lisp.Real    x) (Lisp.Complex y) = Lisp.Complex $ op (cast x) (cast y)
-  -- opToLispNumOp _         _         op (Lisp.Complex x) y                = Lisp.Complex $ op (cast x) (cast y)
+    export
+    primitivesEnv : (Successable m Interpreter.Error, Monad n, Successable n (ts : List Interpreter.Error ** NonEmpty ts)) =>
+      SortedMap String (List Lisp.Value -> Interpreter {m} {n} Lisp.Value)
+    primitivesEnv = fromList
+      [ ("+", foldMLispBinOp $ opToLispOp (Just (+)) (Just (+)) (Just (+)))
+      , ("-", foldMLispBinOp $ opToLispOp (Just (-)) (Just (-)) (Just (-)))
+      , ("*", foldMLispBinOp $ opToLispOp (Just (*)) (Just (*)) (Just (*)))
+      , ("/", foldMLispBinOp $ opToLispOp Nothing (Just (/)) (Just (/)))
+      -- , ("remainder", lispBinOp $ \vx, vy => do
+      --     y <- collect 0 (valueToInteger vy)
+      --     if y == 0
+      --       then collectThrow ZeroDivision
+      --       else do
+      --         x <- collect 0 (valueToInteger vx)
+      --         pure $ integer $ assert_total (mod x y))
+      ]
 
-  opToLispOp : (Successable m Lisp.Error, Monad n, Successable n (ts : List Lisp.Error ** NonEmpty ts)) =>
-    (Maybe (Integer -> Integer -> Integer)) ->
-    (Maybe (Double -> Double -> Double)) ->
-    (Maybe (ComplexD -> ComplexD -> ComplexD)) ->
-    LispVal -> LispVal -> Lisp.Interpreter {m} {n} LispVal
-  opToLispOp opI opR opC (Lisp.Number x) (Lisp.Number y) = Lisp.Number <$> opToLispNumOp opI opR opC x y
-  opToLispOp _ _ _ x y = collectThrow {a = LispVal} (TypeMismatch "Number" x) *> collectThrow (TypeMismatch "Number" y)
+    export
+    envLookup :
+      (Successable m Interpreter.Error, Monad n, Successable n (ts : List Interpreter.Error ** NonEmpty ts)) =>
+      String -> Interpreter {m} {n} (List Lisp.Value -> Interpreter {m} {n} Lisp.Value)
+    envLookup name with (SortedMap.lookup name (primitivesEnv {m} {n}))
+      | Nothing = collect (const $ pure neutral) $ throw $ UnboundVar name
+      | Just x = pure x
 
-  foldMLispBinOp : (Successable m Lisp.Error, Monad n, Successable n (ts : List Lisp.Error ** NonEmpty ts)) =>
-    (LispVal -> LispVal -> Lisp.Interpreter {m} {n} LispVal) ->
-    List.List LispVal -> Lisp.Interpreter {m} {n} LispVal
-  foldMLispBinOp f (x :: xs@(_ :: _)) = foldlM f x xs
-  foldMLispBinOp _ xs = collectThrow $ NumArgs GT 2 xs
+  namespace repl
+    eval : (Successable m Interpreter.Error, Monad n, Successable n (ts : List Interpreter.Error ** NonEmpty ts)) =>
+      Lisp.Value -> Interpreter {m} {n} Lisp.Value
+    eval (ValueOf Lisp.List [ValueOf Lisp.Atom "quote", ls]) = pure ls
+    eval (ValueOf Lisp.List (ValueOf Lisp.Atom fname :: args)) = do
+      f <- envLookup fname
+      args' <- traverse (assert_total eval) args
+      f args'
+    eval val = pure val
 
-  primitivesEnv : (Successable m Lisp.Error, Monad n, Successable n (ts : List Lisp.Error ** NonEmpty ts)) =>
-    SortedMap String (List LispVal -> Lisp.Interpreter {m} {n} LispVal)
-  primitivesEnv = fromList
-    [("+", foldMLispBinOp $ opToLispOp (Just (+)) (Just (+)) (Just (+)))]
+private
+test : Lisp.Value -> Either (ts: List.List Error ** NonEmpty ts) Lisp.Value
+test = runCatchCollect {m = Either Error} {n = Either (ts: List.List Error ** NonEmpty ts)} . eval
 
-  envLookup : (Successable m Lisp.Error, Monad n, Successable n (ts : List Lisp.Error ** NonEmpty ts)) =>
-              String -> Lisp.Interpreter {m} {n} (List LispVal -> Lisp.Interpreter {m} {n} LispVal)
-  envLookup name with (SortedMap.lookup name (primitivesEnv {m} {n}))
-    | Nothing = collect (const $ pure neutral) $ throw $ UnboundVar name
-    | Just x = pure x
+private
+examples : List Lisp.Value
+examples =
+  [ Util.quote $ Util.list [Util.string "aaa", Util.string "bbb"]
+  , Util.list [Util.atom "+", Util.list [Util.string "aaa", Util.string "bbb"] ]
+  , Util.list [Util.atom "+", Util.string "aaa", Util.string "bbb" ]
+  , Util.list [Util.atom "+", integer 1, integer 2, integer 3 ]
+  , Util.list [Util.atom "quotient", integer   13,  integer   4 ]
+  , Util.list [Util.atom "quotient", integer (-13), integer   4 ]
+  , Util.list [Util.atom "quotient", integer   13,  integer (-4) ]
+  , Util.list [Util.atom "quotient", integer (-13), integer (-4) ]
+  ]
 
-  eval : (Successable m Lisp.Error, Monad n, Successable n (ts : List Lisp.Error ** NonEmpty ts)) =>
-    LispVal -> Lisp.Interpreter {m} {n} LispVal
-  eval (Lisp.List [Lisp.Atom "quote", ls]) = pure ls
-  eval (Lisp.List (Lisp.Atom fname :: args)) = do
-    f <- envLookup fname
-    args' <- traverse (assert_total eval) args
-    f args'
-  eval val = pure val
+-- main : IO ()
+-- main = ?main
 
-test : List.List $ Lisp.Interpreter {m = Either Error} {n = Either (ts: List.List Error ** NonEmpty ts)} LispVal
-test = eval <$>
-  [ Lisp.quote $ Lisp.List [Lisp.String "aaa", Lisp.String "bbb"]
-  , Lisp.List [Lisp.Atom "+", Lisp.List [Lisp.String "aaa", Lisp.String "bbb"] ]
-  , Lisp.List [Lisp.Atom "+", Lisp.String "aaa", Lisp.String "bbb" ]
-  , Lisp.List [Lisp.Atom "+", integer 1, integer 2, integer 3 ] ]
-
-main : IO ()
-main = ?main
-
-   -- do
-   --  x <- MkErrCollector ["error : 1"] "1" `catch` \errs => do
-   --    y <- throw ["error thrown"]
-   --    z <- MkErrCollector ["error : 2"] "2"
-   --    w <- throw (the (List String) errs)
-   --    pure $ y <+> z <+> w
-   --  pure $ x
+  --  -- do
+  --  --  x <- MkErrCollector ["error : 1"] "1" `catch` \errs => do
+  --  --    y <- throw ["error thrown"]
+  --  --    z <- MkErrCollector ["error : 2"] "2"
+  --  --    w <- throw (the (List String) errs)
+  --  --    pure $ y <+> z <+> w
+  --  --  pure $ x
