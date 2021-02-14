@@ -30,77 +30,82 @@ public export
 data IsSuccess : {f : Type -> Type} -> {t : Type} -> {fx : f a} -> Result {f} {t} fx -> Type where
   ItIsSuccess : Applicative f => IsSuccess {f} (Success {f})
 
-runIsSuccess : Successable f t => (fx : f a) -> {rx : Result {f} {t} fx} -> IsSuccess rx -> a 
+runIsSuccess : Successable f t => (fx : f a) -> {rx : Result {f} {t} fx} -> IsSuccess rx -> a
 runIsSuccess {f} (pure x) {rx=Success {f=f}} ItIsSuccess = x
 
 export
-data CatchCollect : (Successable m t, Monad n, Successable n (ts : List t ** NonEmpty ts)) =>
+data CatchCollect : (Monad m, Successable m (ts : List t ** NonEmpty ts)) =>
   (a : Type) -> Type where
-  MkCC : (Successable m t, Monad n, Successable n (ts : List t ** NonEmpty ts)) =>
-    (fallback : a) -> (body : n a) -> CatchCollect {m} {n} {t} a
+  MkCC : (Monad m, Successable m (ts : List t ** NonEmpty ts)) =>
+    (fallback : a) -> (body : m a) -> CatchCollect {m} {t} a
 
 EitherCollect : Type -> Type -> Type
-EitherCollect t a = CatchCollect a
-  {t}
-  {m = Either t}
-  {n = Either (ts : List t ** NonEmpty ts)}
+EitherCollect t a = CatchCollect a {t} {m = Either (ts : List t ** NonEmpty ts)}
 
 export
-runCatchCollect : (Successable m t, Monad n, Successable n (ts : List t ** NonEmpty ts)) =>
-  CatchCollect {m} {n} {t} a -> n a
-runCatchCollect (MkCC _ mnx) = mnx
+runCatchCollect : (Monad m, Successable m (ts : List t ** NonEmpty ts)) =>
+  CatchCollect {m} {t} a -> m a
+runCatchCollect (MkCC _ mx) = mx
 
-getFallback : (Successable m t, Monad n, Successable n (ts : List t ** NonEmpty ts)) =>
-  CatchCollect {m} {n} {t} a -> a 
+getFallback : (Monad m, Successable m (ts : List t ** NonEmpty ts)) =>
+  CatchCollect {m} {t} a -> a
 getFallback (MkCC fallback _) = fallback
 
 private
-cram : (Successable m t, Successable n (ts : List t ** NonEmpty ts)) =>
-  m (n a) -> n a
-cram {m} {t} mnx with (result {m} {t} mnx) 
-  cram {m} {t} (throw err) | Failure {f=m} = 
-    runIsSuccess {f=m} {t} (pure {f=m} $ throw {m=n} ([err] ** IsNonEmpty)) ItIsSuccess
-  cram {m} (pure mx) | Success {f=m} = mx
-  
-export
-collect : (Successable m t, Monad n, Successable n (ts : List t ** NonEmpty ts)) =>
-  a -> m a -> CatchCollect {m} {n} {t} a
-collect fallback fx = MkCC fallback $ cram $ map pure fx
-
-export
-collectMonoid : (Successable m t, Monad n, Successable n (ts : List t ** NonEmpty ts)) =>
-  Monoid a => m a -> CatchCollect {m} {n} {t} a
-collectMonoid = collect neutral
-
-export
-collectThrow : (Successable m t, Monad n, Successable n (ts : List t ** NonEmpty ts)) =>
-  Monoid a => t -> CatchCollect {m} {n} {t} a
-collectThrow = collectMonoid . throw
+cram : (Successable f t, Successable m (ts : List t ** NonEmpty ts)) =>
+  f (m a) -> m a
+cram {f} {t} fmx with (result {m=f} {t} fmx)
+  cram {f} {t} (throw err) | Failure {f} =
+    runIsSuccess {f} {t} (pure {f} $ throw {m} ([err] ** IsNonEmpty)) ItIsSuccess
+  cram {f} (pure fx) | Success {f} = fx
 
 public export
-implementation Functor (CatchCollect @{siN} @{miN} @{siM}) where
+implementation Functor (CatchCollect @{siN} @{miN}) where
   map f (MkCC fallback mx) = MkCC (f fallback) $ map f mx
 
 public export
-implementation Applicative (CatchCollect @{siN} @{miN} @{siM}) where
+implementation Applicative (CatchCollect @{siN} @{miN}) where
   pure x = MkCC x $ pure x
-  (<*>) (MkCC fallbackF nf) (MkCC fallbackX nx) =
-    MkCC (fallbackF fallbackX) (do 
-      f <- catch {t = (ts : List t ** NonEmpty ts)} nf $ \(errF :: errsF ** _) => (do
-        errs <- (const errsF <$> nx) `catch` \(errs ** _) => pure $ errsF <+> errs
+  (<*>) (MkCC fallbackF mf) (MkCC fallbackX mx) =
+    MkCC (fallbackF fallbackX) (do
+      f <- catch {t = (ts : List t ** NonEmpty ts)} mf $ \(errF :: errsF ** _) => (do
+        errs <- (const errsF <$> mx) `catch` \(errs ** _) => pure $ errsF <+> errs
         throw (errF :: errs ** the (NonEmpty (errF :: errs)) IsNonEmpty))
-      x <- nx
+      x <- mx
       pure $ f x)
 
 public export
-implementation Monad (CatchCollect @{siN} @{miN} @{siM}) where
-  (>>=) {m} {t} (MkCC fallbackX nx) f = 
+implementation Monad (CatchCollect @{siN} @{miN}) where
+  (>>=) {t} (MkCC fallbackX mx) f =
     MkCC (getFallback $ f fallbackX) (do
-      x <- catch {t = (ts : List t ** NonEmpty ts)} nx $ \(errX :: errsX ** _) => (do
-        errs <- (const errsX <$> runCatchCollect (f fallbackX)) `catch` \(errsY ** _) => 
+      x <- catch {t = (ts : List t ** NonEmpty ts)} mx $ \(errX :: errsX ** _) => (do
+        errs <- (const errsX <$> runCatchCollect (f fallbackX)) `catch` \(errsY ** _) =>
                           pure $ errsX <+> errsY
         throw (errX :: errs ** the (NonEmpty (errX :: errs)) IsNonEmpty))
       runCatchCollect $ f x)
+
+export
+collect : (Successable f t, Monad m, Successable m (ts : List t ** NonEmpty ts)) =>
+  a -> f a -> CatchCollect {m} {t} a
+collect fallback fx = MkCC fallback $ cram $ map pure fx
+
+export
+collectMonoid : (Successable m t, Monad m, Successable m (ts : List t ** NonEmpty ts)) =>
+  Monoid a => m a -> CatchCollect {m} {t} a
+collectMonoid = collect neutral
+
+export
+collectCatch : (Monad m, Successable m (ts : List t ** NonEmpty ts)) =>
+  CatchCollect {m} {t} a -> ((ts : List t ** NonEmpty ts) -> CatchCollect {m} {t} a) ->
+  CatchCollect {m} {t} a
+collectCatch {t} (MkCC _ mx) f with (result {m} {t = (ts : List t ** NonEmpty ts)} mx)
+  collectCatch {m} (MkCC _ (throw err)) f | Failure {f=m} = f err
+  collectCatch {m} (MkCC _ (pure x)) _    | Success {f=m} = pure x
+
+export
+collectThrow : (Successable m t, Monad m, Successable m (ts : List t ** NonEmpty ts)) =>
+  Monoid a => t -> CatchCollect {m} {t} a
+collectThrow {m} {t} = collectMonoid {m} . throw {m} {t}
 
 -- private
 -- test : CatchCollect {m = Either String} {n = Either (ls : List String ** NonEmpty ls)} Nat
@@ -125,7 +130,7 @@ implementation Monad (CatchCollect @{siN} @{miN} @{siM}) where
 private
 test : EitherCollect String Nat
 test = do
-  x <- collect 0 (throw "err0")
-  y <- collect 0 (pure 12)
-  z <- collect 0 (throw $ show x <+> show y)
+  x <- collect 0 (Left "err0")
+  y <- collect 0 (Right 12)
+  z <- collect 0 (Left $ show x <+> show y)
   pure $ sum [x,y,z]

@@ -2,9 +2,11 @@ module Main
 
 import Pruviloj
 import Control.Catchable
+import Derive.Eq
 import Derive.Show
 import Data.Primitives.Views
 import Data.Complex
+import Data.So
 import Data.SortedMap as SortedMap
 -- import Scheme.Exception
 import Scheme.CatchCollect
@@ -40,6 +42,8 @@ namespace Lisp
       | Real
       | Integer
 
+    %runElab deriveEq `{Number.Ty}
+    mutual -- parsing fails without this
     %runElab deriveShow `{Number.Ty}
 
     export
@@ -57,12 +61,17 @@ namespace Lisp
     | String
     | Bool
 
+  %runElab deriveEq `{Lisp.Ty}
+  mutual -- parsing fails without this
   %runElab deriveShow `{Lisp.Ty}
+
+  -- implementation Eq Lisp.Ty where
+  --   (==) Lisp.Atom Lisp.Atom = True
 
   mutual
     public export
     data Value : Type where
-      ValueOf : (lty : Lisp.Ty) -> (val : representation lty) -> Lisp.Value
+      ValueOf : (vty : Lisp.Ty) -> (val : representation vty) -> Lisp.Value
 
     export
     representation : Lisp.Ty -> Type
@@ -94,6 +103,16 @@ namespace Lisp
 
   implementation Monoid Lisp.Value where
     neutral = ValueOf Lisp.List []
+
+--   data ViewValueOf : Lisp.Ty -> Lisp.Value -> Type where
+--     IsNot: {expected : Lisp.Ty} -> {vty : Lisp.Ty} -> {x : representation vty} ->
+--       {auto isNotExpected : So (expected /= vty)} ->  ViewValueOf expected (ValueOf vty x)
+--     Is: {expected : Lisp.Ty} -> {vty : Lisp.Ty} -> {x : representation vty} -> ViewValueOf expected (ValueOf vty x)
+
+--   viewValueOf : (expected : Lisp.Ty) -> (v : Lisp.Value) -> ViewValueOf expected v
+--   viewValueOf expected (ValueOf vty _) with (choose $ expected /= vty)
+--     | Left prf = IsNot {isNotExpected = prf}
+--     | Right _ = Is
 
   namespace Util
     atom : String -> Lisp.Value
@@ -138,9 +157,25 @@ namespace Lisp
     %runElab deriveShow `{Interpreter.Error}
 
     export
-    Interpreter : (Successable m Interpreter.Error, Monad n, Successable n (ts : List Interpreter.Error ** NonEmpty ts)) =>
+    Interpreter :
+      (Successable m Interpreter.Error, Monad n, Successable n (ts : List Interpreter.Error ** NonEmpty ts)) =>
       Type -> Type
     Interpreter {m} {n} a = CatchCollect {m} {n} {t = Interpreter.Error} a
+
+    export
+    numberCastTo :
+      (Successable m Interpreter.Error, Monad n, Successable n (ts : List Interpreter.Error ** NonEmpty ts)) =>
+      Number.Ty -> Lisp.Value -> Interpreter {m} {n} Lisp.Value
+    numberCastTo Number.Complex v@(ValueOf (Lisp.Number Number.Complex) _) = pure v
+    numberCastTo Number.Complex   (ValueOf (Lisp.Number Number.Real)    x) = pure $ complex $ cast x
+    numberCastTo Number.Complex   (ValueOf (Lisp.Number Number.Integer) x) = pure $ complex $ cast x
+    numberCastTo Number.Real    v@(ValueOf (Lisp.Number Number.Complex) _) = collectThrow $ TypeMismatch (Lisp.Number Number.Real) v
+    numberCastTo Number.Real    v@(ValueOf (Lisp.Number Number.Real)    _) = pure v
+    numberCastTo Number.Real      (ValueOf (Lisp.Number Number.Integer) x) = pure $ real $ cast x
+    numberCastTo Number.Integer v@(ValueOf (Lisp.Number Number.Complex) x) = collectThrow $ TypeMismatch (Lisp.Number Number.Integer) v
+    numberCastTo Number.Integer v@(ValueOf (Lisp.Number Number.Real)    x) = collectThrow $ TypeMismatch (Lisp.Number Number.Integer) v
+    numberCastTo Number.Integer v@(ValueOf (Lisp.Number Number.Integer) _) = pure v
+    numberCastTo _ v = collectThrow $ TypeMismatchNumber v
 
     export
     valueToComplex : (Applicative m, Catchable m Interpreter.Error) =>
@@ -308,10 +343,10 @@ examples =
   , Util.list [Util.atom "+", Util.list [Util.string "aaa", Util.string "bbb"] ]
   , Util.list [Util.atom "+", Util.string "aaa", Util.string "bbb" ]
   , Util.list [Util.atom "+", integer 1, integer 2, integer 3 ]
-  , Util.list [Util.atom "quotient", integer   13,  integer   4 ]
-  , Util.list [Util.atom "quotient", integer (-13), integer   4 ]
-  , Util.list [Util.atom "quotient", integer   13,  integer (-4) ]
-  , Util.list [Util.atom "quotient", integer (-13), integer (-4) ]
+  -- , Util.list [Util.atom "quotient", integer   13,  integer   4 ]
+  -- , Util.list [Util.atom "quotient", integer (-13), integer   4 ]
+  -- , Util.list [Util.atom "quotient", integer   13,  integer (-4) ]
+  -- , Util.list [Util.atom "quotient", integer (-13), integer (-4) ]
   ]
 
 -- main : IO ()

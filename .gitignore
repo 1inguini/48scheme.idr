@@ -2,4 +2,4 @@
 *.ibc
 *.o
 *~
-*.fuse_hidden
+**/.fuse_hidden*
