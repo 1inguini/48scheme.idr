@@ -90,8 +90,8 @@ collect : (Successable f t, Monad m, Successable m (ts : List t ** NonEmpty ts))
 collect fallback fx = MkCC fallback $ cram $ map pure fx
 
 export
-collectMonoid : (Successable m t, Monad m, Successable m (ts : List t ** NonEmpty ts)) =>
-  Monoid a => m a -> CatchCollect {m} {t} a
+collectMonoid : (Successable f t, Monad m, Successable m (ts : List t ** NonEmpty ts)) =>
+  Monoid a => f a -> CatchCollect {m} {t} a
 collectMonoid = collect neutral
 
 export
@@ -103,9 +103,14 @@ collectCatch {t} (MkCC _ mx) f with (result {m} {t = (ts : List t ** NonEmpty ts
   collectCatch {m} (MkCC _ (pure x)) _    | Success {f=m} = pure x
 
 export
-collectThrow : (Successable m t, Monad m, Successable m (ts : List t ** NonEmpty ts)) =>
+collectThrow : (Monad m, Successable m (ts : List t ** NonEmpty ts)) =>
+  a -> t -> CatchCollect {m} {t} a
+collectThrow fallback = collect fallback . Left
+
+export
+collectThrowMonoid : (Monad m, Successable m (ts : List t ** NonEmpty ts)) =>
   Monoid a => t -> CatchCollect {m} {t} a
-collectThrow {m} {t} = collectMonoid {m} . throw {m} {t}
+collectThrowMonoid = collectThrow neutral
 
 -- private
 -- test : CatchCollect {m = Either String} {n = Either (ls : List String ** NonEmpty ls)} Nat
