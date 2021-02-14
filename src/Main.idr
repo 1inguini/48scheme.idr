@@ -46,11 +46,26 @@ namespace Lisp
     mutual -- parsing fails without this
     %runElab deriveShow `{Number.Ty}
 
+    implementation Ord Number.Ty where
+      compare Number.Complex Number.Complex = EQ
+      compare Number.Complex y              = GT
+      compare Number.Real    Number.Complex = LT
+      compare Number.Real    Number.Real    = EQ
+      compare Number.Real    Number.Integer = GT
+      compare Number.Integer Number.Integer = EQ
+      compare Number.Integer y              = LT
+
     export
     representation : Number.Ty -> Type
     representation Number.Complex = ComplexD
     representation Number.Real    = Double
     representation Number.Integer = Integer
+
+    export
+    fallbackFor : (nty : Number.Ty) -> Number.representation nty
+    fallbackFor Number.Complex = 0 :+ 0
+    fallbackFor Number.Real    = 0
+    fallbackFor Number.Integer = 0
 
   public export
   data Ty
@@ -65,9 +80,6 @@ namespace Lisp
   mutual -- parsing fails without this
   %runElab deriveShow `{Lisp.Ty}
 
-  -- implementation Eq Lisp.Ty where
-  --   (==) Lisp.Atom Lisp.Atom = True
-
   mutual
     public export
     data Value : Type where
@@ -81,6 +93,15 @@ namespace Lisp
     representation (Lisp.Number nty) = Number.representation nty
     representation Lisp.String = String
     representation Lisp.Bool = Bool
+
+  export
+  getType : Lisp.Value -> Lisp.Ty
+  getType (ValueOf lty _) = lty
+
+  export
+  unValue : (wanted : Lisp.Ty) -> (v : Lisp.Value) -> {ok : wanted = getType v} ->
+    representation wanted
+  unValue wanted {ok} (ValueOf _ x) = rewrite ok in x
 
   implementation Show Lisp.Value where
     show (ValueOf Lisp.Atom atm) = atm
@@ -181,7 +202,7 @@ namespace Lisp
     valueToComplex : (Applicative m, Catchable m Interpreter.Error) =>
       Lisp.Value -> m ComplexD
     valueToComplex (ValueOf (Lisp.Number Number.Complex) x) = pure x
-    valueToComplex (ValueOf (Lisp.Number Number.Real) x) = pure $ cast x
+    valueToComplex (ValueOf (Lisp.Number Number.Real)    x) = pure $ cast x
     valueToComplex (ValueOf (Lisp.Number Number.Integer) x) = pure $ cast x
     valueToComplex x = throw $ TypeMismatch (Lisp.Number Number.Complex) x
 
@@ -199,89 +220,120 @@ namespace Lisp
     valueToInteger (ValueOf (Lisp.Number Number.Integer) x) = pure $ cast x
     valueToInteger x = throw $ TypeMismatch (Lisp.Number Number.Integer) x
 
+    valueToNum : (Applicative m, Catchable m Interpreter.Error) =>
+      (nty : Number.Ty) -> Lisp.Value -> m (Number.representation nty)
+    valueToNum Number.Complex v = valueToComplex v
+    valueToNum Number.Real    v = valueToDouble  v
+    valueToNum Number.Integer v = valueToInteger v
+
+    private
+    numOpToLispOp : (Monad m, Successable m (ts : List Interpreter.Error ** NonEmpty ts)) =>
+      (nty : Number.Ty) -> (let ty = Number.representation nty in ty -> ty -> ty) ->
+      Lisp.Value -> Lisp.Value -> Interpreter {m} Lisp.Value
+    numOpToLispOp nty op vx vy = do
+      x <- collect (fallbackFor nty) $ valueToNum {m = Either Interpreter.Error} nty vx
+      y <- collect (fallbackFor nty) $ valueToNum {m = Either Interpreter.Error} nty vy
+      pure $ ValueOf (Lisp.Number nty) $ op x y
+
     export
     opToLispOp : (Monad m, Successable m (ts : List Interpreter.Error ** NonEmpty ts)) =>
       (Maybe (Integer -> Integer -> Integer)) ->
       (Maybe (Double -> Double -> Double)) ->
       (Maybe (ComplexD -> ComplexD -> ComplexD)) ->
       Lisp.Value -> Lisp.Value -> Interpreter {m} Lisp.Value
+    opToLispOp Nothing    Nothing    Nothing    vx vy = collectThrowMonoid $ Default "Bad primitive"
+    opToLispOp Nothing    Nothing    (Just opC) vx@(ValueOf (Lisp.Number _) _) vy@(ValueOf (Lisp.Number _) _) = numOpToLispOp Number.Complex opC vx vy
+    opToLispOp Nothing    (Just opR) Nothing    vx@(ValueOf (Lisp.Number _) _) vy@(ValueOf (Lisp.Number _) _) = numOpToLispOp Number.Real    opR vx vy
+    opToLispOp Nothing    (Just opR) (Just opC) vx@(ValueOf (Lisp.Number _) _) vy@(ValueOf (Lisp.Number _) _) = numOpToLispOp Number.Real    opR vx vy `or`
+                                                                                                                numOpToLispOp Number.Complex opC vx vy
+    opToLispOp (Just opI) Nothing    Nothing    vx@(ValueOf (Lisp.Number _) _) vy@(ValueOf (Lisp.Number _) _) = numOpToLispOp Number.Integer opI vx vy
+    opToLispOp (Just opI) Nothing    (Just opC) vx@(ValueOf (Lisp.Number _) _) vy@(ValueOf (Lisp.Number _) _) = numOpToLispOp Number.Integer opI vx vy `or`
+                                                                                                                numOpToLispOp Number.Complex opC vx vy
+    opToLispOp (Just opI) (Just opR) Nothing    vx@(ValueOf (Lisp.Number _) _) vy@(ValueOf (Lisp.Number _) _) = numOpToLispOp Number.Integer opI vx vy `or`
+                                                                                                                numOpToLispOp Number.Real    opR vx vy
+    opToLispOp (Just opI) (Just opR) (Just opC) vx@(ValueOf (Lisp.Number _) _) vy@(ValueOf (Lisp.Number _) _) = numOpToLispOp Number.Integer opI vx vy `or`
+                                                                                                               (numOpToLispOp Number.Real    opR vx vy `or`
+                                                                                                                numOpToLispOp Number.Complex opC vx vy)
+    opToLispOp _ _ _ vx vy = collectThrowMonoid {a=Lisp.Value} (TypeMismatchNumber vx) *> collectThrowMonoid {a=Lisp.Value} (TypeMismatchNumber vy)
+
     --         Integer   Real      ComplexD
-    opToLispOp Nothing   Nothing   Nothing   x                                          y                                          = collectThrowMonoid $ Default "Bad primitive"
-    opToLispOp Nothing   Nothing   (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op x y
-    opToLispOp Nothing   Nothing   (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ complex $ op x (cast y)
-    opToLispOp Nothing   Nothing   (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ complex $ op x (cast y)
-    opToLispOp Nothing   Nothing   (Just op)   (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op (cast x) y
-    opToLispOp Nothing   Nothing   (Just op)   (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ complex $ op (cast x) (cast y)
-    opToLispOp Nothing   Nothing   (Just op)   (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ complex $ op (cast x) (cast y)
-    opToLispOp Nothing   Nothing   (Just op)   (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op (cast x) y
-    opToLispOp Nothing   Nothing   (Just op)   (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ complex $ op (cast x) (cast y)
-    opToLispOp Nothing   Nothing   (Just op)   (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ complex $ op (cast x) (cast y)
-    opToLispOp Nothing   (Just op) Nothing   x@(ValueOf (Lisp.Number Number.Complex) _) y@(ValueOf (Lisp.Number Number.Complex) _) = collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Real) x) *>
-                                                                                                                                     collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Real) y)
-    opToLispOp Nothing   (Just op) Nothing   x@(ValueOf (Lisp.Number Number.Complex) _)   (ValueOf (Lisp.Number Number.Real)    _) = collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Real) x)
-    opToLispOp Nothing   (Just op) Nothing   x@(ValueOf (Lisp.Number Number.Complex) _) y@(ValueOf (Lisp.Number Number.Integer) _) = collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) x) *>
-                                                                                                                                     collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Real) y)
-    opToLispOp Nothing   (Just op) Nothing     (ValueOf (Lisp.Number Number.Real)    _) y@(ValueOf (Lisp.Number Number.Complex) _) = collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Real) y)
-    opToLispOp Nothing   (Just op) Nothing     (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ real $ op x y
-    opToLispOp Nothing   (Just op) Nothing     (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ real $ op x (cast y)
-    opToLispOp Nothing   (Just op) Nothing     (ValueOf (Lisp.Number Number.Integer) _) y@(ValueOf (Lisp.Number Number.Complex) _) = collectThrowMonoid (TypeMismatch (Lisp.Number Number.Integer) y)
-    opToLispOp Nothing   (Just op) Nothing     (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ real $ op (cast x) y
-    opToLispOp Nothing   (Just op) Nothing     (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ real $ op (cast x) (cast y)
-    opToLispOp Nothing   (Just _)  (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op x y
-    opToLispOp Nothing   (Just _)  (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ complex $ op x (cast y)
-    opToLispOp Nothing   (Just _)  (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ complex $ op x (cast y)
-    opToLispOp Nothing   (Just _)  (Just op)   (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op (cast x) y
-    opToLispOp Nothing   (Just op) (Just _)    (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ real $ op x y
-    opToLispOp Nothing   (Just op) (Just _)    (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ real $ op x (cast y)
-    opToLispOp Nothing   (Just _)  (Just op)   (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op (cast x) y
-    opToLispOp Nothing   (Just op) (Just _)    (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ real $ op (cast x) y
-    opToLispOp Nothing   (Just op) (Just _)    (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ real $ op (cast x) (cast y)
-    opToLispOp (Just _)  Nothing   Nothing   x@(ValueOf (Lisp.Number Number.Complex) _) y@(ValueOf (Lisp.Number Number.Complex) _) = collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) x) *>
-                                                                                                                                     collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) y)
-    opToLispOp (Just _)  Nothing   Nothing   x@(ValueOf (Lisp.Number Number.Complex) _) y@(ValueOf (Lisp.Number Number.Real)    _) = collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) x) *>
-                                                                                                                                     collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) y)
-    opToLispOp (Just _)  Nothing   Nothing   x@(ValueOf (Lisp.Number Number.Complex) _)   (ValueOf (Lisp.Number Number.Integer) _) = collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) x)
-    opToLispOp (Just _)  Nothing   Nothing   x@(ValueOf (Lisp.Number Number.Real)    _) y@(ValueOf (Lisp.Number Number.Complex) _) = collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) x) *>
-                                                                                                                                     collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) y)
-    opToLispOp (Just _)  Nothing   Nothing   x@(ValueOf (Lisp.Number Number.Real)    _) y@(ValueOf (Lisp.Number Number.Real)    _) = collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) x) *>
-                                                                                                                                     collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) y)
-    opToLispOp (Just _)  Nothing   Nothing   x@(ValueOf (Lisp.Number Number.Real)    _)   (ValueOf (Lisp.Number Number.Integer) _) = collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) x)
-    opToLispOp (Just _)  Nothing   Nothing     (ValueOf (Lisp.Number Number.Integer) _) y@(ValueOf (Lisp.Number Number.Complex) _) = collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) y)
-    opToLispOp (Just _)  Nothing   Nothing     (ValueOf (Lisp.Number Number.Integer) _) y@(ValueOf (Lisp.Number Number.Real)    _) = collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) y)
-    opToLispOp (Just op) Nothing   Nothing     (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ integer $ op x y
-    opToLispOp (Just _)  Nothing   (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op x y
-    opToLispOp (Just _)  Nothing   (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ complex $ op x (cast y)
-    opToLispOp (Just _)  Nothing   (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ complex $ op x (cast y)
-    opToLispOp (Just _)  Nothing   (Just op)   (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op (cast x) y
-    opToLispOp (Just _)  Nothing   (Just op)   (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ complex $ op (cast x) (cast y)
-    opToLispOp (Just _)  Nothing   (Just op)   (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ complex $ op (cast x) (cast y)
-    opToLispOp (Just _)  Nothing   (Just op)   (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op (cast x) y
-    opToLispOp (Just _)  Nothing   (Just op)   (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ complex $ op (cast x) (cast y)
-    opToLispOp (Just op) Nothing   (Just _)    (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ integer $ op x y
-    opToLispOp (Just _)  (Just _)  Nothing   x@(ValueOf (Lisp.Number Number.Complex) _) y@(ValueOf (Lisp.Number Number.Complex) _) = collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Real) x) *>
-                                                                                                                                     collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Real) y)
-    opToLispOp (Just _)  (Just _)  Nothing   x@(ValueOf (Lisp.Number Number.Complex) _) y@(ValueOf (Lisp.Number Number.Real)    _) = collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Real) x)
-    opToLispOp (Just _)  (Just _)  Nothing   x@(ValueOf (Lisp.Number Number.Complex) _) y@(ValueOf (Lisp.Number Number.Integer) _) = collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Real) x)
-    opToLispOp (Just _)  (Just _)  Nothing     (ValueOf (Lisp.Number Number.Real)    _) y@(ValueOf (Lisp.Number Number.Complex) _) = collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Real) y)
-    opToLispOp (Just _)  (Just op) Nothing     (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ real $ op x y
-    opToLispOp (Just _)  (Just op) Nothing     (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ real $ op x (cast y)
-    opToLispOp (Just _)  (Just _)  Nothing     (ValueOf (Lisp.Number Number.Integer) _) y@(ValueOf (Lisp.Number Number.Complex) _) = collectThrowMonoid (TypeMismatch (Lisp.Number Number.Integer) y)
-    opToLispOp (Just _)  (Just op) Nothing     (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ real $ op (cast x) y
-    opToLispOp (Just op) (Just _)  Nothing     (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ integer $ op x y
-    opToLispOp (Just _)  (Just _)  (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op (cast x) y
-    opToLispOp (Just _)  (Just _)  (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ complex $ op (cast x) (cast y)
-    opToLispOp (Just _)  (Just _)  (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ complex $ op (cast x) (cast y)
-    opToLispOp (Just _)  (Just _)  (Just op)   (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op (cast x) y
-    opToLispOp (Just _)  (Just op) (Just _)    (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ real $ op x y
-    opToLispOp (Just _)  (Just op) (Just _)    (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ real $ op x (cast y)
-    opToLispOp (Just _)  (Just _)  (Just op)   (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op (cast x) y
-    opToLispOp (Just _)  (Just op) (Just _)    (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ real $ op (cast x) y
-    opToLispOp (Just op) (Just _)  (Just _)    (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ integer $ op x y
-    opToLispOp _         _         _         x                                            (ValueOf (Lisp.Number _)              _) = collectThrowMonoid {a=Lisp.Value} (TypeMismatchNumber x)
-    opToLispOp _         _         _           (ValueOf (Lisp.Number _)              _) y                                          = collectThrowMonoid {a=Lisp.Value} (TypeMismatchNumber y)
-    opToLispOp _         _         _         x                                          y                                          = collectThrowMonoid {a=Lisp.Value} (TypeMismatchNumber x) *>
-                                                                                                                                     collectThrowMonoid {a=Lisp.Value} (TypeMismatchNumber x)
-    private
+    -- opToLispOp Nothing   Nothing   Nothing   x                                          y                                          = collectThrowMonoid $ Default "Bad primitive"
+    -- opToLispOp Nothing   Nothing   (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op x y
+    -- opToLispOp Nothing   Nothing   (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ complex $ op x (cast y)
+    -- opToLispOp Nothing   Nothing   (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ complex $ op x (cast y)
+    -- opToLispOp Nothing   Nothing   (Just op)   (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op (cast x) y
+    -- opToLispOp Nothing   Nothing   (Just op)   (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ complex $ op (cast x) (cast y)
+    -- opToLispOp Nothing   Nothing   (Just op)   (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ complex $ op (cast x) (cast y)
+    -- opToLispOp Nothing   Nothing   (Just op)   (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op (cast x) y
+    -- opToLispOp Nothing   Nothing   (Just op)   (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ complex $ op (cast x) (cast y)
+    -- opToLispOp Nothing   Nothing   (Just op)   (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ complex $ op (cast x) (cast y)
+    -- opToLispOp Nothing   (Just op) Nothing   x@(ValueOf (Lisp.Number Number.Complex) _) y@(ValueOf (Lisp.Number Number.Complex) _) = collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Real) x) *>
+    --                                                                                                                                  collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Real) y)
+    -- opToLispOp Nothing   (Just op) Nothing   x@(ValueOf (Lisp.Number Number.Complex) _)   (ValueOf (Lisp.Number Number.Real)    _) = collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Real) x)
+    -- opToLispOp Nothing   (Just op) Nothing   x@(ValueOf (Lisp.Number Number.Complex) _) y@(ValueOf (Lisp.Number Number.Integer) _) = collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) x) *>
+    --                                                                                                                                  collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Real) y)
+    -- opToLispOp Nothing   (Just op) Nothing     (ValueOf (Lisp.Number Number.Real)    _) y@(ValueOf (Lisp.Number Number.Complex) _) = collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Real) y)
+    -- opToLispOp Nothing   (Just op) Nothing     (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ real $ op x y
+    -- opToLispOp Nothing   (Just op) Nothing     (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ real $ op x (cast y)
+    -- opToLispOp Nothing   (Just op) Nothing     (ValueOf (Lisp.Number Number.Integer) _) y@(ValueOf (Lisp.Number Number.Complex) _) = collectThrowMonoid (TypeMismatch (Lisp.Number Number.Integer) y)
+    -- opToLispOp Nothing   (Just op) Nothing     (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ real $ op (cast x) y
+    -- opToLispOp Nothing   (Just op) Nothing     (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ real $ op (cast x) (cast y)
+    -- opToLispOp Nothing   (Just _)  (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op x y
+    -- opToLispOp Nothing   (Just _)  (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ complex $ op x (cast y)
+    -- opToLispOp Nothing   (Just _)  (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ complex $ op x (cast y)
+    -- opToLispOp Nothing   (Just _)  (Just op)   (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op (cast x) y
+    -- opToLispOp Nothing   (Just op) (Just _)    (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ real $ op x y
+    -- opToLispOp Nothing   (Just op) (Just _)    (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ real $ op x (cast y)
+    -- opToLispOp Nothing   (Just _)  (Just op)   (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op (cast x) y
+    -- opToLispOp Nothing   (Just op) (Just _)    (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ real $ op (cast x) y
+    -- opToLispOp Nothing   (Just op) (Just _)    (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ real $ op (cast x) (cast y)
+    -- opToLispOp (Just _)  Nothing   Nothing   x@(ValueOf (Lisp.Number Number.Complex) _) y@(ValueOf (Lisp.Number Number.Complex) _) = collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) x) *>
+    --                                                                                                                                  collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) y)
+    -- opToLispOp (Just _)  Nothing   Nothing   x@(ValueOf (Lisp.Number Number.Complex) _) y@(ValueOf (Lisp.Number Number.Real)    _) = collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) x) *>
+    --                                                                                                                                  collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) y)
+    -- opToLispOp (Just _)  Nothing   Nothing   x@(ValueOf (Lisp.Number Number.Complex) _)   (ValueOf (Lisp.Number Number.Integer) _) = collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) x)
+    -- opToLispOp (Just _)  Nothing   Nothing   x@(ValueOf (Lisp.Number Number.Real)    _) y@(ValueOf (Lisp.Number Number.Complex) _) = collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) x) *>
+    --                                                                                                                                  collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) y)
+    -- opToLispOp (Just _)  Nothing   Nothing   x@(ValueOf (Lisp.Number Number.Real)    _) y@(ValueOf (Lisp.Number Number.Real)    _) = collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) x) *>
+    --                                                                                                                                  collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) y)
+    -- opToLispOp (Just _)  Nothing   Nothing   x@(ValueOf (Lisp.Number Number.Real)    _)   (ValueOf (Lisp.Number Number.Integer) _) = collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) x)
+    -- opToLispOp (Just _)  Nothing   Nothing     (ValueOf (Lisp.Number Number.Integer) _) y@(ValueOf (Lisp.Number Number.Complex) _) = collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) y)
+    -- opToLispOp (Just _)  Nothing   Nothing     (ValueOf (Lisp.Number Number.Integer) _) y@(ValueOf (Lisp.Number Number.Real)    _) = collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Integer) y)
+    -- opToLispOp (Just op) Nothing   Nothing     (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ integer $ op x y
+    -- opToLispOp (Just _)  Nothing   (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op x y
+    -- opToLispOp (Just _)  Nothing   (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ complex $ op x (cast y)
+    -- opToLispOp (Just _)  Nothing   (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ complex $ op x (cast y)
+    -- opToLispOp (Just _)  Nothing   (Just op)   (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op (cast x) y
+    -- opToLispOp (Just _)  Nothing   (Just op)   (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ complex $ op (cast x) (cast y)
+    -- opToLispOp (Just _)  Nothing   (Just op)   (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ complex $ op (cast x) (cast y)
+    -- opToLispOp (Just _)  Nothing   (Just op)   (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op (cast x) y
+    -- opToLispOp (Just _)  Nothing   (Just op)   (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ complex $ op (cast x) (cast y)
+    -- opToLispOp (Just op) Nothing   (Just _)    (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ integer $ op x y
+    -- opToLispOp (Just _)  (Just _)  Nothing   x@(ValueOf (Lisp.Number Number.Complex) _) y@(ValueOf (Lisp.Number Number.Complex) _) = collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Real) x) *>
+    --                                                                                                                                  collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Real) y)
+    -- opToLispOp (Just _)  (Just _)  Nothing   x@(ValueOf (Lisp.Number Number.Complex) _) y@(ValueOf (Lisp.Number Number.Real)    _) = collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Real) x)
+    -- opToLispOp (Just _)  (Just _)  Nothing   x@(ValueOf (Lisp.Number Number.Complex) _) y@(ValueOf (Lisp.Number Number.Integer) _) = collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Real) x)
+    -- opToLispOp (Just _)  (Just _)  Nothing     (ValueOf (Lisp.Number Number.Real)    _) y@(ValueOf (Lisp.Number Number.Complex) _) = collectThrowMonoid {a=Lisp.Value} (TypeMismatch (Lisp.Number Number.Real) y)
+    -- opToLispOp (Just _)  (Just op) Nothing     (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ real $ op x y
+    -- opToLispOp (Just _)  (Just op) Nothing     (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ real $ op x (cast y)
+    -- opToLispOp (Just _)  (Just _)  Nothing     (ValueOf (Lisp.Number Number.Integer) _) y@(ValueOf (Lisp.Number Number.Complex) _) = collectThrowMonoid (TypeMismatch (Lisp.Number Number.Integer) y)
+    -- opToLispOp (Just _)  (Just op) Nothing     (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ real $ op (cast x) y
+    -- opToLispOp (Just op) (Just _)  Nothing     (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ integer $ op x y
+    -- opToLispOp (Just _)  (Just _)  (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op (cast x) y
+    -- opToLispOp (Just _)  (Just _)  (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ complex $ op (cast x) (cast y)
+    -- opToLispOp (Just _)  (Just _)  (Just op)   (ValueOf (Lisp.Number Number.Complex) x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ complex $ op (cast x) (cast y)
+    -- opToLispOp (Just _)  (Just _)  (Just op)   (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op (cast x) y
+    -- opToLispOp (Just _)  (Just op) (Just _)    (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ real $ op x y
+    -- opToLispOp (Just _)  (Just op) (Just _)    (ValueOf (Lisp.Number Number.Real)    x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ real $ op x (cast y)
+    -- opToLispOp (Just _)  (Just _)  (Just op)   (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Complex) y) = pure $ complex $ op (cast x) y
+    -- opToLispOp (Just _)  (Just op) (Just _)    (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Real)    y) = pure $ real $ op (cast x) y
+    -- opToLispOp (Just op) (Just _)  (Just _)    (ValueOf (Lisp.Number Number.Integer) x)   (ValueOf (Lisp.Number Number.Integer) y) = pure $ integer $ op x y
+    -- opToLispOp _         _         _         x                                            (ValueOf (Lisp.Number _)              _) = collectThrowMonoid {a=Lisp.Value} (TypeMismatchNumber x)
+    -- opToLispOp _         _         _           (ValueOf (Lisp.Number _)              _) y                                          = collectThrowMonoid {a=Lisp.Value} (TypeMismatchNumber y)
+    -- opToLispOp _         _         _         x                                          y                                          = collectThrowMonoid {a=Lisp.Value} (TypeMismatchNumber x) *>
+    --                                                                                                                                  collectThrowMonoid {a=Lisp.Value} (TypeMismatchNumber x)
+    -- private
+
     foldMLispBinOp :
       (Monad m, Successable m (ts : List Interpreter.Error ** NonEmpty ts)) =>
       (Lisp.Value -> Lisp.Value -> Interpreter {m} Lisp.Value) ->

@@ -103,6 +103,11 @@ collectCatch {t} (MkCC _ mx) f with (result {m} {t = (ts : List t ** NonEmpty ts
   collectCatch {m} (MkCC _ (pure x)) _    | Success {f=m} = pure x
 
 export
+or : (Monad m, Successable m (ts : List t ** NonEmpty ts)) =>
+  CatchCollect {m} {t} a -> CatchCollect {m} {t} a -> CatchCollect {m} {t} a
+or ccx ccy = ccx `collectCatch` const ccy
+
+export
 collectThrow : (Monad m, Successable m (ts : List t ** NonEmpty ts)) =>
   a -> t -> CatchCollect {m} {t} a
 collectThrow fallback = collect fallback . Left
