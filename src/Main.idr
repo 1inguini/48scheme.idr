@@ -343,12 +343,13 @@ namespace Lisp
     --                                                                                                                                  collectThrowMonoid {a=Lisp.Value} (TypeMismatchNumber x)
     -- private
 
-    foldMLispBinOp :
+    foldOrUnaryLispBinOp :
       (Monad m, Successable m (ts : List Interpreter.Error ** NonEmpty ts)) =>
-      (Lisp.Value -> Lisp.Value -> Interpreter {m} Lisp.Value) ->
+      (Lisp.Value -> Lisp.Value -> Interpreter {m} Lisp.Value) -> Lisp.Value ->
       List Lisp.Value -> Interpreter {m} Lisp.Value
-    foldMLispBinOp f (x :: xs@(_ :: _)) = foldlM f x xs
-    foldMLispBinOp _ xs = collectThrowMonoid $ NumArgs GT 2 xs
+    foldOrUnaryLispBinOp _ _ [] = collectThrowMonoid $ NumArgs GT 1 []
+    foldOrUnaryLispBinOp f neutral [x] = f neutral x
+    foldOrUnaryLispBinOp f _ (x :: xs) = foldlM f x xs
 
     private
     lispBinOp :
@@ -387,9 +388,9 @@ namespace Lisp
       SortedMap String (List Lisp.Value -> Interpreter {m} Lisp.Value)
     primitivesEnv = fromList
       [ ("+", foldlM (opToLispOp (Just (+)) (Just (+)) (Just (+))) $ integer 0)
-      , ("-", foldlM (opToLispOp (Just (-)) (Just (-)) (Just (-))) $ integer 0)
       , ("*", foldlM (opToLispOp (Just (*)) (Just (*)) (Just (*))) $ integer 1)
-      , ("/", foldlM (opToLispOp Nothing    (Just (/)) (Just (/))) $ integer 1)
+      , ("-", foldOrUnaryLispBinOp (opToLispOp (Just (-)) (Just (-)) (Just (-))) $ integer 0)
+      , ("/", foldOrUnaryLispBinOp (opToLispOp Nothing    (Just (/)) (Just (/))) $ integer 1)
       , ("quotient", lispBinOp $ numMaybeOpToLispOp Number.Integer quotient)
       , ("remainder", lispBinOp $ numMaybeOpToLispOp Number.Integer remainder)
       ]
