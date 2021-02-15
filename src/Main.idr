@@ -235,6 +235,15 @@ namespace Lisp
       y <- collect (fallbackFor nty) $ valueToNum {m = Either Interpreter.Error} nty vy
       pure $ ValueOf (Lisp.Number nty) $ op x y
 
+    private
+    numMaybeOpToLispOp : (Monad m, Successable m (ts : List Interpreter.Error ** NonEmpty ts)) =>
+      (nty : Number.Ty) ->  (let ty = Number.representation nty in ty -> ty -> Maybe ty) ->
+      Lisp.Value -> Lisp.Value -> Interpreter {m} Lisp.Value
+    numMaybeOpToLispOp nty op vx vy = do
+      x <- collect (fallbackFor nty) $ valueToNum {m = Either Interpreter.Error} nty vx
+      y <- collect (fallbackFor nty) $ valueToNum {m = Either Interpreter.Error} nty vy
+      maybe (collectThrowMonoid ZeroDivision) (pure . ValueOf (Lisp.Number nty)) $ op x y
+
     export
     opToLispOp : (Monad m, Successable m (ts : List Interpreter.Error ** NonEmpty ts)) =>
       (Maybe (Integer -> Integer -> Integer)) ->
@@ -349,21 +358,40 @@ namespace Lisp
     lispBinOp f [x, y] = f x y
     lispBinOp _ xs = collectThrowMonoid $ NumArgs EQ 2 xs
 
+    private
+    natQuotient : Nat -> Nat -> Maybe Nat
+    natQuotient dividend Z = Just 10
+    natQuotient dividend divisor = Just $ quotHelper divisor 0
+      where
+        quotHelper : Nat -> Nat -> Nat
+        quotHelper accm count =
+          if lt accm dividend
+          then assert_total $ quotHelper (accm + divisor) (S count)
+          else count
+
+    private
+    quotient : Integer -> Integer -> Maybe Integer
+    quotient _ 0 = Nothing
+    quotient dividend divisor with (dividend * divisor < 0)
+      | False = cast <$> natQuotient (cast $ abs dividend) (cast $ abs divisor)
+      | True = negate . cast <$> natQuotient (cast $ abs dividend) (cast $ abs divisor)
+
+    private
+    remainder : Integer -> Integer -> Maybe Integer
+    remainder dividend divisor = do
+      quot <- quotient dividend divisor
+      pure $ dividend - divisor * quot
+
     export
     primitivesEnv : (Monad m, Successable m (ts : List Interpreter.Error ** NonEmpty ts)) =>
       SortedMap String (List Lisp.Value -> Interpreter {m} Lisp.Value)
     primitivesEnv = fromList
-      [ ("+", foldMLispBinOp $ opToLispOp (Just (+)) (Just (+)) (Just (+)))
-      , ("-", foldMLispBinOp $ opToLispOp (Just (-)) (Just (-)) (Just (-)))
-      , ("*", foldMLispBinOp $ opToLispOp (Just (*)) (Just (*)) (Just (*)))
-      , ("/", foldMLispBinOp $ opToLispOp Nothing (Just (/)) (Just (/)))
-      -- , ("remainder", lispBinOp $ \vx, vy => do
-      --     y <- collect 0 (valueToInteger vy)
-      --     if y == 0
-      --       then collectThrowMonoid ZeroDivision
-      --       else do
-      --         x <- collect 0 (valueToInteger vx)
-      --         pure $ integer $ assert_total (mod x y))
+      [ ("+", foldlM (opToLispOp (Just (+)) (Just (+)) (Just (+))) $ integer 0)
+      , ("-", foldlM (opToLispOp (Just (-)) (Just (-)) (Just (-))) $ integer 0)
+      , ("*", foldlM (opToLispOp (Just (*)) (Just (*)) (Just (*))) $ integer 1)
+      , ("/", foldlM (opToLispOp Nothing    (Just (/)) (Just (/))) $ integer 1)
+      , ("quotient", lispBinOp $ numMaybeOpToLispOp Number.Integer quotient)
+      , ("remainder", lispBinOp $ numMaybeOpToLispOp Number.Integer remainder)
       ]
 
     export
@@ -391,14 +419,35 @@ test = runCatchCollect {m = Either (ts: List.List Error ** NonEmpty ts)} . eval
 private
 examples : List Lisp.Value
 examples =
-  [ Util.quote $ Util.list [Util.string "aaa", Util.string "bbb"]
-  , Util.list [Util.atom "+", Util.list [Util.string "aaa", Util.string "bbb"] ]
-  , Util.list [Util.atom "+", Util.string "aaa", Util.string "bbb" ]
-  , Util.list [Util.atom "+", integer 1, integer 2, integer 3 ]
-  -- , Util.list [Util.atom "quotient", integer   13,  integer   4 ]
-  -- , Util.list [Util.atom "quotient", integer (-13), integer   4 ]
-  -- , Util.list [Util.atom "quotient", integer   13,  integer (-4) ]
-  -- , Util.list [Util.atom "quotient", integer (-13), integer (-4) ]
+  [ Util.atom "quote"
+  , Util.quote $ Util.list [Util.string "aaa", Util.string "bbb"]
+  , Util.atom "+"
+  , Util.list [Util.atom "+", Util.list [Util.string "aaa", Util.string "bbb"]]
+  , Util.list [Util.atom "+", Util.string "aaa", Util.string "bbb"]
+  , Util.list [Util.atom "+", Util.integer 3, Util.integer 4]
+  , Util.list [Util.atom "+", Util.integer 3]
+  , Util.list [Util.atom "+"]
+  , Util.atom "*"
+  , Util.list [Util.atom "*", Util.integer 4]
+  , Util.list [Util.atom "*"]
+  , Util.atom "-"
+  , Util.list [Util.atom "-", Util.integer 3, Util.integer 4]
+  , Util.list [Util.atom "-", Util.integer 3, Util.integer 4, Util.integer 5]
+  , Util.list [Util.atom "-", Util.integer 3]
+  , Util.atom "/"
+  , Util.list [Util.atom "/", Util.integer 3, Util.integer 4]
+  , Util.list [Util.atom "/", Util.integer 3, Util.integer 4, Util.integer 5]
+  , Util.list [Util.atom "/", Util.integer 3]
+  , Util.atom "quotient"
+  , Util.list [Util.atom "quotient", Util.integer   13,  Util.integer   4]
+  , Util.list [Util.atom "quotient", Util.integer (-13), Util.integer   4]
+  , Util.list [Util.atom "quotient", Util.integer   13,  Util.integer (-4)]
+  , Util.list [Util.atom "quotient", Util.integer (-13), Util.integer (-4)]
+  , Util.atom "remainder"
+  , Util.list [Util.atom "remainder", Util.integer   13,  Util.integer   4]
+  , Util.list [Util.atom "remainder", Util.integer (-13), Util.integer   4]
+  , Util.list [Util.atom "remainder", Util.integer   13,  Util.integer (-4)]
+  , Util.list [Util.atom "remainder", Util.integer (-13), Util.integer (-4)]
   ]
 
 -- main : IO ()
