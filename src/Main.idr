@@ -15,6 +15,14 @@ import Scheme.CatchCollect
 %language ElabReflection
 
 private
+implementation Semigroup () where
+  (<+>) _ _ = ()
+
+private
+implementation Monoid () where
+ neutral = ()
+
+private
 implementation Cast a a where
   cast = id
 
@@ -269,13 +277,15 @@ namespace Lisp
     opToLispOp (Just opI) (Just opR) (Just opC) vx@(ValueOf (Lisp.Number _) _) vy@(ValueOf (Lisp.Number _) _) = numOpToLispOp Number.Integer opI vx vy `or`
                                                                                                                (numOpToLispOp Number.Real    opR vx vy `or`
                                                                                                                 numOpToLispOp Number.Complex opC vx vy)
-    opToLispOp _ _ _ vx vy = collectThrowMonoid {a=Lisp.Value} (TypeMismatchNumber vx) *> collectThrowMonoid {a=Lisp.Value} (TypeMismatchNumber vy)
+    opToLispOp _ _ _ vx@(ValueOf (Lisp.Number _) _) vy = collectThrowMonoid (TypeMismatchNumber vy)
+    opToLispOp _ _ _ vx vy@(ValueOf (Lisp.Number _) _) = collectThrowMonoid (TypeMismatchNumber vx)
+    opToLispOp _ _ _ vx vy = collectThrowMonoid {a = ()} (TypeMismatchNumber vx) *> collectThrowMonoid (TypeMismatchNumber vy)
 
     foldOrUnaryLispBinOp : (Lisp.Value -> Lisp.Value -> Interpreter Lisp.Value) -> Lisp.Value ->
       List Lisp.Value -> Interpreter Lisp.Value
-    foldOrUnaryLispBinOp _ _ [] = collectThrowMonoid $ NumArgs GT 1 []
-    foldOrUnaryLispBinOp f neutral [x] = f neutral x
-    foldOrUnaryLispBinOp f _ (x :: xs) = foldlM f x xs
+    foldOrUnaryLispBinOp _ _       []        = collectThrowMonoid $ NumArgs GT 1 []
+    foldOrUnaryLispBinOp f neutral [x]       = f neutral x
+    foldOrUnaryLispBinOp f _       (x :: xs) = foldlM f x xs
 
     private
     lispBinOp : (Lisp.Value -> Lisp.Value -> Interpreter Lisp.Value) ->
@@ -352,6 +362,7 @@ examples =
   , Util.atom "+"
   , Util.list [Util.atom "+", Util.list [Util.string "aaa", Util.string "bbb"]]
   , Util.list [Util.atom "+", Util.string "aaa", Util.string "bbb"]
+  , Util.list [Util.atom "+", Util.string "aaa", Util.atom "bbb", Util.string "ccc"]
   , Util.list [Util.atom "+", Util.integer 3, Util.integer 4]
   , Util.list [Util.atom "+", Util.integer 3]
   , Util.list [Util.atom "+"]
@@ -359,6 +370,7 @@ examples =
   , Util.list [Util.atom "*", Util.integer 4]
   , Util.list [Util.atom "*"]
   , Util.atom "-"
+  , Util.list [Util.atom "-", Util.string "aaa", Util.atom "bbb", Util.string "ccc"]
   , Util.list [Util.atom "-", Util.integer 3, Util.integer 4]
   , Util.list [Util.atom "-", Util.integer 3, Util.integer 4, Util.integer 5]
   , Util.list [Util.atom "-", Util.integer 3]

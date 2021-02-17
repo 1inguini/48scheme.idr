@@ -19,6 +19,11 @@ interface (Applicative m, Catchable m t) =>
     throwIsFail : result (throw {a} err) = Failure {m} {t} {err} {a}
     pureIsSuccess : {x : a} -> result (pure x) = Success {m} {x}
 
+implementation (Successable m t, Applicative n, Catchable n t) => Cast (m a) (n a) where
+  cast {t} mx with (result {t} mx)
+    cast {t} (throw err) | Failure {t} = throw err
+    cast {m} (pure  x)   | Success {m} = pure x
+
 public export
 implementation Successable (Either t) t where
   result (Left err) = Failure
@@ -35,101 +40,113 @@ runIsSuccess {m} (pure x) {rx=Success {m}} ItIsSuccess = x
 
 export
 data CatchCollect : (t : Type) -> (a : Type) -> Type where
-  MkCC : List t -> a -> CatchCollect t a
+  Errors : (errs : List t) -> {auto atLeastOne : NonEmpty errs} -> CatchCollect t a
+  Pure   : a -> CatchCollect t a
 
 -- EitherCollect : Type -> Type -> Type
 -- EitherCollect t a = CatchCollect a {t} {m = Either (ts : List t ** NonEmpty ts)}
 
 export
-runCatchCollect : (Monad m, Successable m (List t)) =>
-  CatchCollect t a -> m a
-runCatchCollect (MkCC [] x) = pure x
-runCatchCollect (MkCC errs _) = throw errs
+runCatchCollect : (Applicative m, Catchable m (List t)) => CatchCollect t a -> m a
+runCatchCollect (Pure x)      = pure x
+runCatchCollect (Errors errs) = throw errs
 
-private
-getInternal : CatchCollect t a -> a
-getInternal (MkCC _ x) = x
-
-private
-getErrors : CatchCollect t a -> List t
-getErrors (MkCC errs _) = errs
+export
+runCatchCollectNonEmpty : (Applicative m, Catchable m (ts : List t ** NonEmpty ts)) => CatchCollect t a -> m a
+runCatchCollectNonEmpty (Pure x)                   = pure x
+runCatchCollectNonEmpty (Errors errs {atLeastOne}) = throw (errs ** atLeastOne)
 
 -- private
--- cram : (Successable f t, Successable m (ts : List t ** NonEmpty ts)) =>
---   f (m a) -> m a
--- cram {f} {t} fmx with (result {m=f} {t} fmx)
---   cram {f} {t} (throw err) | Failure {f} =
---     runIsSuccess {f} {t} (pure {f} $ throw {m} ([err] ** IsNonEmpty)) ItIsSuccess
---   cram {f} (pure fx) | Success {f} = fx
+-- getInternal : CatchCollect t a -> a
+-- getInternal (MkCC _ x) = x
+
+-- private
+-- getErrors : CatchCollect t a -> List t
+-- getErrors (MkCC errs _) = errs
+
+-- -- private
+-- -- cram : (Successable f t, Successable m (ts : List t ** NonEmpty ts)) =>
+-- --   f (m a) -> m a
+-- -- cram {f} {t} fmx with (result {m=f} {t} fmx)
+-- --   cram {f} {t} (throw err) | Failure {f} =
+-- --     runIsSuccess {f} {t} (pure {f} $ throw {m} ([err] ** IsNonEmpty)) ItIsSuccess
+-- --   cram {f} (pure fx) | Success {f} = fx
 
 public export
 implementation Functor (CatchCollect t) where
-  map f (MkCC errs x) = MkCC errs $ f x
+  map _ (Errors errs {atLeastOne}) = Errors errs {atLeastOne}
+  map f (Pure x) = Pure $ f x
 
 public export
 implementation Applicative (CatchCollect t) where
-  pure x = MkCC [] x
-  (<*>) (MkCC errsF f) (MkCC errsX x) =
-    MkCC (errsF <+> errsX) (f x)
+  pure x = Pure x
+  (<*>) (Errors (err :: errsF)) (Errors errsX) = Errors $ err :: errsF <+> errsX
+  (<*>) (Errors errsF)          (Pure _)       = Errors errsF
+  (<*>) (Pure _)                (Errors errsX) = Errors errsX
+  (<*>) (Pure f)                (Pure x)       = Pure $ f x
 
 public export
 implementation Monad (CatchCollect t) where
-  (>>=) (MkCC errsX x) f =
-    let
-      MkCC errsY y = f x
-    in MkCC (errsX <+> errsY) y
+  (>>=) (Errors errsX) _ = Errors errsX
+  (>>=) (Pure x) f = f x
 
-export
-collect : Successable m t => a -> m a -> CatchCollect t a
-collect fallback mx with (result {t} mx)
-  collect {t} fallback (throw err) | Failure {t} = MkCC [err] fallback
-  collect {m} _        (pure  x)   | Success {m} = MkCC [] x
+public export
+implementation Catchable (CatchCollect t) t where
+  catch     (Errors (err :: _)) f = f err
+  catch ccx@(Pure _)            _ = ccx
+  throw err = Errors [err]
 
-export
-collectMonoid : (Successable m t, Monoid a) => m a -> CatchCollect t a
-collectMonoid = collect neutral
+-- export
+-- collect : Successable m t => a -> m a -> CatchCollect t a
+-- collect fallback mx with (result {t} mx)
+--   collect {t} fallback (throw err) | Failure {t} = MkCC [err] fallback
+--   collect {m} _        (pure  x)   | Success {m} = MkCC [] x
 
-export
-collectCatch : CatchCollect t a -> (List t -> CatchCollect t a) -> CatchCollect t a
-collectCatch (MkCC []   x) _ = pure x
-collectCatch (MkCC errs _) f = f errs
+-- export
+-- collectMonoid : (Successable m t, Monoid a) => m a -> CatchCollect t a
+-- collectMonoid = collect neutral
 
-export
-or : CatchCollect t a -> CatchCollect t a -> CatchCollect t a
-or ccx ccy = ccx `collectCatch` const ccy
+-- export
+-- collectCatch : CatchCollect t a -> (List t -> CatchCollect t a) -> CatchCollect t a
+-- collectCatch (MkCC []   x) _ = pure x
+-- collectCatch (MkCC errs _) f = f errs
 
-export
-collectThrow : a -> t -> CatchCollect t a
-collectThrow fallback = collect fallback . Left
+-- export
+-- or : CatchCollect t a -> CatchCollect t a -> CatchCollect t a
+-- or ccx ccy = ccx `collectCatch` const ccy
 
-export
-collectThrowMonoid : Monoid a => t -> CatchCollect t a
-collectThrowMonoid = collectThrow neutral
+-- export
+-- collectThrow : a -> t -> CatchCollect t a
+-- collectThrow fallback = collect fallback . Left
+
+-- export
+-- collectThrowMonoid : Monoid a => t -> CatchCollect t a
+-- collectThrowMonoid = collectThrow neutral
+
+-- -- private
+-- -- test : CatchCollect {m = Either String} {n = Either (ls : List String ** NonEmpty ls)} Nat
+-- -- test = (\x,y,z => sum [x,y,z])
+-- --   <$> collect (throw "err0")
+-- --   <*> collect (pure 12)
+-- --   <*> collect (throw "err2")
+
+-- -- private
+-- -- test : CatchCollect Nat
+-- --   {t = String}
+-- --   {m = Either String}
+-- --   {n = Either (ls : List String ** NonEmpty ls)}
+-- -- test =
+-- --   [|
+-- --     (\x,y,z => sum [x,y,z])
+-- --     (collect 0 (throw "err0"))
+-- --     (collect 0 (pure 12))
+-- --     (collect 0 (throw "err2"))
+-- --   |]
 
 -- private
--- test : CatchCollect {m = Either String} {n = Either (ls : List String ** NonEmpty ls)} Nat
--- test = (\x,y,z => sum [x,y,z])
---   <$> collect (throw "err0")
---   <*> collect (pure 12)
---   <*> collect (throw "err2")
-
--- private
--- test : CatchCollect Nat
---   {t = String}
---   {m = Either String}
---   {n = Either (ls : List String ** NonEmpty ls)}
--- test =
---   [|
---     (\x,y,z => sum [x,y,z])
---     (collect 0 (throw "err0"))
---     (collect 0 (pure 12))
---     (collect 0 (throw "err2"))
---   |]
-
-private
-test : CatchCollect String Nat
-test = do
-  x <- collect 0 (Left "err0")
-  y <- collect 0 (Right 12)
-  z <- collect 0 (Left $ show x <+> show y)
-  pure $ sum [x,y,z]
+-- test : CatchCollect String Nat
+-- test = do
+--   x <- collect 0 (Left "err0")
+--   y <- collect 0 (Right 12)
+--   z <- collect 0 (Left $ show x <+> show y)
+--   pure $ sum [x,y,z]
