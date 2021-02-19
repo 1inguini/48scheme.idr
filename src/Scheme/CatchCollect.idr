@@ -7,6 +7,10 @@ import Control.Monad.Writer as Writer
 
 %default total
 
+export
+or : Catchable m t => m a -> m a -> m a
+or mx my = mx `catch` const my
+
 public export
 data Result : {m : Type -> Type} -> {t : Type} -> m a -> Type where
   Failure : Catchable m t => Result {m} {t} {a} (throw {m} {t} {a} err)
