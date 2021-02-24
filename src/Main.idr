@@ -74,7 +74,7 @@ namespace Lisp
     | Number Number.Ty
     | String
     | Bool
-    | Function Nat Bool -- number of arguments, has variable length list argument or not
+    | Function Nat Bool -- number of arguments, whether it has variable length list argument or not
 
   %runElab deriveEq `{Lisp.Ty}
   mutual -- parsing fails without this
@@ -328,14 +328,14 @@ namespace Lisp
 
     mutual
       apply : Interpreter.Constraint m =>
-        Lisp.Value -> List Lisp.Value -> m Lisp.Value
-      apply (ValueOf (Lisp.Function argNum False) (DefineFunction closure argIds body)) args
+        FunctionDefinition argNum hasRest -> List Lisp.Value -> m Lisp.Value
+      apply {hasRest = False} {argNum} (DefineFunction closure argIds body) args
         with (decEq argNum (length args))
         | Yes prf =
             local (const $ inserts closure $ zip argIds $ rewrite prf in fromList args) $
               assert_total $ eval body
         | No _ = throw $ NumArgs EQ argNum args
-      apply (ValueOf (Lisp.Function argNum True) (DefineFunction closure (argIds, restId) body)) fullArgs
+      apply {hasRest = True} {argNum} (DefineFunction closure (argIds, restId) body) fullArgs
         with (isLTE argNum $ length fullArgs)
         | Yes prf =
           let (args, rest) = Vect.splitAt {m=length fullArgs - argNum} argNum $
@@ -344,16 +344,23 @@ namespace Lisp
           in local (const $ inserts closure $ (restId, Util.list $ toList rest) :: zip argIds args) $
             assert_total $ eval body
         | No _ = throw $ NumArgs GT argNum fullArgs
-      apply v args = throw $ TypeMismatch (Lisp.Function (length args) False) v
 
       eval : Interpreter.Constraint m =>
         Lisp.Value -> m Lisp.Value
       eval (ValueOf Lisp.List [ValueOf Lisp.Atom "quote", ls]) = pure ls
-      eval (ValueOf Lisp.List (ValueOf Lisp.Atom fname :: args)) = do
-        f <- envLookup fname
+      eval (ValueOf Lisp.List (ValueOf Lisp.Atom "quote" :: ls)) = throw $ NumArgs EQ 1 ls
+      eval (ValueOf Lisp.List [ValueOf Lisp.Atom "lambda", ValueOf Lisp.Atom var, body]) = do
+        env <- ask
+        pure $ function $ DefineFunction {hasRest = True} env ([], var) body
+      -- eval (ValueOf Lisp.List [ValueOf Lisp.Atom "lambda", ValueOf Lisp.List vars, body]) = do
+      --   env <- ask
+      --   pure $ function $ DefineFunction {hasRest = False} env vars body
+      eval (ValueOf Lisp.Atom var) = envLookup var
+      eval (ValueOf Lisp.List (vFunc :: args)) = do
+        ValueOf (Function _ _) f <- eval vFunc
+        | v => throw (TypeMismatch (Lisp.Function (length args) False) v)
         args' <- traverse (assert_total eval) args
         apply f args'
-      eval (ValueOf Lisp.Atom var) = envLookup var
       eval val = pure val
 
 test : Lisp.Value -> Either Interpreter.Errors Lisp.Value
