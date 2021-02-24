@@ -337,13 +337,12 @@ namespace Lisp
         | No _ = throw $ NumArgs EQ argNum args
       apply (ValueOf (Lisp.Function argNum True) (DefineFunction closure (argIds, restId) body)) fullArgs
         with (isLTE argNum $ length fullArgs)
-        | Yes prf = case
-          Vect.splitAt {m=length fullArgs - argNum} argNum $
-            rewrite plusMinusNeutral argNum (length fullArgs) in
-              Vect.fromList fullArgs of
-          (args, rest) =>
-            local (const $ inserts closure $ (restId, Util.list $ toList rest) :: zip argIds args) $
-              assert_total $ eval body
+        | Yes prf =
+          let (args, rest) = Vect.splitAt {m=length fullArgs - argNum} argNum $
+                rewrite plusMinusNeutral argNum (length fullArgs)
+                in Vect.fromList fullArgs
+          in local (const $ inserts closure $ (restId, Util.list $ toList rest) :: zip argIds args) $
+            assert_total $ eval body
         | No _ = throw $ NumArgs GT argNum fullArgs
       apply v args = throw $ TypeMismatch (Lisp.Function (length args) False) v
 
@@ -354,6 +353,7 @@ namespace Lisp
         f <- envLookup fname
         args' <- traverse (assert_total eval) args
         apply f args'
+      eval (ValueOf Lisp.Atom var) = envLookup var
       eval val = pure val
 
 test : Lisp.Value -> Either Interpreter.Errors Lisp.Value
