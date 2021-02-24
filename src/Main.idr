@@ -1,9 +1,11 @@
 module Main
 
 import Control.Catchable
+import Control.Monad.Reader
 import Derive.Eq
 import Derive.Show
 import Data.Vect
+import Data.Vect.Views
 import Data.Primitives.Views
 import Data.Complex
 import Data.SortedMap
@@ -13,27 +15,21 @@ import Scheme.CatchCollect
 %default total
 %language ElabReflection
 
-private
 implementation Semigroup () where
   (<+>) _ _ = ()
 
-private
 implementation Monoid () where
  neutral = ()
 
-private
 implementation Cast a a where
   cast = id
 
-export
 ComplexD : Type
 ComplexD = Complex Double
 
-export
 implementation Cast Integer ComplexD where
   cast = (:+ 0) . cast
 
-export
 implementation Cast Double ComplexD where
   cast = (:+ 0)
 
@@ -43,7 +39,6 @@ namespace Lisp
 
   namespace Number
     ||| Number Type for Lisp.Value
-    public export
     data Ty
       = Complex
       | Real
@@ -62,19 +57,16 @@ namespace Lisp
       compare Number.Integer Number.Integer = EQ
       compare Number.Integer y              = LT
 
-    export
     representation : Number.Ty -> Type
     representation Number.Complex = ComplexD
     representation Number.Real    = Double
     representation Number.Integer = Integer
 
-    export
     fallbackFor : (nty : Number.Ty) -> Number.representation nty
     fallbackFor Number.Complex = 0 :+ 0
     fallbackFor Number.Real    = 0
     fallbackFor Number.Integer = 0
 
-  public export
   data Ty
     = Atom
     | List
@@ -82,6 +74,7 @@ namespace Lisp
     | Number Number.Ty
     | String
     | Bool
+    | Function Nat Bool -- number of arguments, has variable length list argument or not
 
   %runElab deriveEq `{Lisp.Ty}
   mutual -- parsing fails without this
@@ -95,27 +88,39 @@ namespace Lisp
 --     decEq = decEqTy
 
   mutual
-    public export
     data Value : Type where
       ValueOf : (vty : Lisp.Ty) -> (val : representation vty) -> Lisp.Value
 
-    export
-    representation : Lisp.Ty -> Type
-    representation Lisp.Atom         = String
-    representation Lisp.List         = List Lisp.Value
-    representation Lisp.DottedList   = (List Lisp.Value, Lisp.Value)
-    representation (Lisp.Number nty) = Number.representation nty
-    representation Lisp.String       = String
-    representation Lisp.Bool         = Bool
+    Env : Type
+    Env = SortedMap String Lisp.Value
 
-  export
+    record FunctionDefinition (argNum : Nat) (hasRest : Bool) where
+      constructor DefineFunction
+      closure : Lisp.Env
+      argIds : if hasRest then (Vect argNum String, String) else Vect argNum String
+      body : Lisp.Value
+
+    representation : Lisp.Ty -> Type
+    representation Lisp.Atom                      = String
+    representation Lisp.List                      = List Lisp.Value
+    representation Lisp.DottedList                = (List Lisp.Value, Lisp.Value)
+    representation (Lisp.Number nty)              = Number.representation nty
+    representation Lisp.String                    = String
+    representation Lisp.Bool                      = Bool
+    representation (Lisp.Function argNum hasRest) = FunctionDefinition argNum hasRest
+
   getType : Lisp.Value -> Lisp.Ty
   getType (ValueOf lty _) = lty
 
-  export
   unValue : (wanted : Lisp.Ty) -> (v : Lisp.Value) -> {ok : wanted = getType v} ->
     representation wanted
   unValue wanted {ok} (ValueOf _ x) = rewrite ok in x
+
+  lambdaString : String -> String -> String
+  lambdaString formals body = concat {t = List}
+      [ "(lambda (", formals, ")\n"
+      , "  ", body, ")"
+      ]
 
   implementation Show Lisp.Value where
     show (ValueOf Lisp.Atom atm) = atm
@@ -128,6 +133,12 @@ namespace Lisp
     show (ValueOf Lisp.String str) = "\"" <+> str <+> "\""
     show (ValueOf Lisp.Bool True) = "#t"
     show (ValueOf Lisp.Bool False) = "#f"
+    show (ValueOf (Lisp.Function _ False) (DefineFunction _ argIds body)) =
+      lambdaString (unwords $ toList argIds) $
+        assert_total $ show body
+    show (ValueOf (Lisp.Function argNum True) (DefineFunction _ (argIds, restId) body)) =
+      lambdaString (unwords (toList argIds) <+> " . " <+> restId) $
+        assert_total $ show body
 
   implementation Semigroup Lisp.Value where
     (<+>) x y = ValueOf Lisp.List $ toList x <+> toList y
@@ -181,9 +192,11 @@ namespace Lisp
     quote : Lisp.Value -> Lisp.Value
     quote ls = ValueOf Lisp.List [ValueOf Lisp.Atom "quote", ls]
 
+    function : FunctionDefinition argNum hasRest -> Lisp.Value
+    function {argNum} {hasRest} = ValueOf (Lisp.Function argNum hasRest)
+
   namespace Interpreter
 
-    public export
     data Error
       = NumArgs Ordering Nat (List Lisp.Value)
       | TypeMismatch Lisp.Ty (Lisp.Value)
@@ -193,8 +206,8 @@ namespace Lisp
       | Default String
 
     %runElab deriveShow `{Interpreter.Error}
+    mutual
 
-    export
     Errors : Type
     Errors = List Interpreter.Error
 
@@ -204,11 +217,12 @@ namespace Lisp
       or (throw $ TypeMismatch (Lisp.Number Number.Real) v) $
       throw $ TypeMismatch (Lisp.Number Number.Complex) v
 
-    export
-    Interpreter : Type -> Type
-    Interpreter a = CatchCollect Interpreter.Error a
+    interface (MonadReader Lisp.Env m, Catchable m Interpreter.Error) => Constraint (m : Type -> Type) where
+    implementation (MonadReader Lisp.Env m, Catchable m Interpreter.Error) => Constraint m where
 
-    export
+    Interpreter : Catchable m Interpreter.Error => Type -> Type
+    Interpreter {m} = ReaderT Lisp.Env m
+
     numberCastTo : (Applicative m, Catchable m Interpreter.Error) =>
       Number.Ty -> Lisp.Value -> m Lisp.Value
     numberCastTo Number.Complex v@(ValueOf (Lisp.Number Number.Complex) _) = pure v
@@ -222,7 +236,6 @@ namespace Lisp
     numberCastTo Number.Integer v@(ValueOf (Lisp.Number Number.Integer) _) = pure v
     numberCastTo _ v = throwTypeMismatchNumber v
 
-    export
     valueToNum : (Applicative m, Catchable m Interpreter.Error) =>
       (nty : Number.Ty) -> Lisp.Value -> m (Number.representation nty)
     valueToNum Number.Complex (ValueOf (Lisp.Number Number.Complex) x) = pure x
@@ -236,65 +249,16 @@ namespace Lisp
     valueToNum Number.Integer (ValueOf (Lisp.Number Number.Integer) x) = pure $ cast x
     valueToNum Number.Integer v                                        = throw $ TypeMismatch (Lisp.Number Number.Integer) v
 
-    private
     valueListToNumberRepresentationList : (Applicative m, Catchable m Interpreter.Error) =>
       (nty : Number.Ty) -> List Lisp.Value -> m (List (Number.representation nty))
     valueListToNumberRepresentationList nty vs = traverse (valueToNum nty) vs
 
-    private
-    numOpToLispOp : (Monad m, Catchable m Interpreter.Error) =>
-      (nty : Number.Ty) -> (let ty = Number.representation nty in ty -> ty -> ty) ->
-      Lisp.Value -> Lisp.Value -> m Lisp.Value
-    numOpToLispOp nty op vx vy = do
-      (x, y) <- MkPair <$> valueToNum nty vx <*> valueToNum nty vy
-      pure $ ValueOf (Lisp.Number nty) $ op x y
-
-    private
-    numMaybeOpToLispOp : (Monad m, Catchable m Interpreter.Error) =>
-      (nty : Number.Ty) ->  (let ty = Number.representation nty in ty -> ty -> Maybe ty) ->
-      Lisp.Value -> Lisp.Value -> m Lisp.Value
-    numMaybeOpToLispOp nty op vx vy = do
-      (x, y) <- MkPair <$> valueToNum nty vx <*> valueToNum nty vy
-      maybe (throw ZeroDivision) (pure . ValueOf (Lisp.Number nty)) $ op x y
-
-    export
-    opToLispOp : (Monad m, Catchable m Interpreter.Error) =>
-      (Maybe (Integer -> Integer -> Integer)) ->
-      (Maybe (Double -> Double -> Double)) ->
-      (Maybe (ComplexD -> ComplexD -> ComplexD)) ->
-      Lisp.Value -> Lisp.Value -> m Lisp.Value
-    opToLispOp Nothing    Nothing    Nothing    vx vy = throw $ Default "Bad primitive"
-    opToLispOp Nothing    Nothing    (Just opC) vx@(ValueOf (Lisp.Number _) _) vy@(ValueOf (Lisp.Number _) _) = numOpToLispOp Number.Complex opC vx vy
-    opToLispOp Nothing    (Just opR) Nothing    vx@(ValueOf (Lisp.Number _) _) vy@(ValueOf (Lisp.Number _) _) = numOpToLispOp Number.Real    opR vx vy
-    opToLispOp Nothing    (Just opR) (Just opC) vx@(ValueOf (Lisp.Number _) _) vy@(ValueOf (Lisp.Number _) _) = numOpToLispOp Number.Real    opR vx vy `or`
-                                                                                                                numOpToLispOp Number.Complex opC vx vy
-    opToLispOp (Just opI) Nothing    Nothing    vx@(ValueOf (Lisp.Number _) _) vy@(ValueOf (Lisp.Number _) _) = numOpToLispOp Number.Integer opI vx vy
-    opToLispOp (Just opI) Nothing    (Just opC) vx@(ValueOf (Lisp.Number _) _) vy@(ValueOf (Lisp.Number _) _) = numOpToLispOp Number.Integer opI vx vy `or`
-                                                                                                                numOpToLispOp Number.Complex opC vx vy
-    opToLispOp (Just opI) (Just opR) Nothing    vx@(ValueOf (Lisp.Number _) _) vy@(ValueOf (Lisp.Number _) _) = numOpToLispOp Number.Integer opI vx vy `or`
-                                                                                                                numOpToLispOp Number.Real    opR vx vy
-    opToLispOp (Just opI) (Just opR) (Just opC) vx@(ValueOf (Lisp.Number _) _) vy@(ValueOf (Lisp.Number _) _) = numOpToLispOp Number.Integer opI vx vy `or`
-                                                                                                               (numOpToLispOp Number.Real    opR vx vy `or`
-                                                                                                                numOpToLispOp Number.Complex opC vx vy)
-    opToLispOp _ _ _ vx@(ValueOf (Lisp.Number _) _) vy = throwTypeMismatchNumber vy
-    opToLispOp _ _ _ vx vy@(ValueOf (Lisp.Number _) _) = throwTypeMismatchNumber vx
-    opToLispOp _ _ _ vx vy = (*>) {a = ()} (throwTypeMismatchNumber vx) (throwTypeMismatchNumber vy)
-
-    foldOrUnaryLispBinOp : (Monad m, Catchable m Interpreter.Error) =>
-      (Lisp.Value -> Lisp.Value -> m Lisp.Value) -> Lisp.Value ->
-      List Lisp.Value -> m Lisp.Value
-    foldOrUnaryLispBinOp _ _       []        = throw $ NumArgs GT 1 []
-    foldOrUnaryLispBinOp f neutral [x]       = f neutral x
-    foldOrUnaryLispBinOp f _       (x :: xs) = foldlM f x xs
-
-    private
     lispBinOp : (Applicative m, Catchable m Interpreter.Error) =>
       (Lisp.Value -> Lisp.Value -> m Lisp.Value) ->
       List.List Lisp.Value -> m Lisp.Value
     lispBinOp f [x, y] = f x y
     lispBinOp _ xs = throw $ NumArgs EQ 2 xs
 
-    private
     natQuotient : Nat -> Nat -> Maybe Nat
     natQuotient dividend Z = Nothing
     natQuotient dividend divisor = Just $ quotHelper divisor 0
@@ -305,26 +269,22 @@ namespace Lisp
           then assert_total $ quotHelper (accm + divisor) (S count)
           else count
 
-    private
     quotient : Integer -> Integer -> Maybe Integer
     quotient _ 0 = Nothing
     quotient dividend divisor with (dividend * divisor < 0)
       | False = cast <$> natQuotient (cast $ abs dividend) (cast $ abs divisor)
       | True = negate . cast <$> natQuotient (cast $ abs dividend) (cast $ abs divisor)
 
-    private
     remainder : Integer -> Integer -> Maybe Integer
     remainder dividend divisor = do
       quot <- quotient dividend divisor
       pure $ dividend - divisor * quot
 
-    private
     modulo : Integer -> Integer -> Maybe Integer
     modulo dividend divisor = do
       rem <- remainder dividend divisor
       pure $ rem + if dividend * divisor < 0 then divisor else 0
 
-    private
     opToValueListOp : (Applicative m, Catchable m Interpreter.Error) =>
       (nty : Number.Ty) -> let ty = Number.representation nty in (ty -> ty -> ty) -> ty -> List Lisp.Value -> m Lisp.Value
     opToValueListOp nty op seed vs = Util.number nty . foldl op seed <$> valueListToNumberRepresentationList nty vs
@@ -333,41 +293,72 @@ namespace Lisp
       (definitions : Vect (S len) (nty : Number.Ty ** let ty = Number.representation nty in (ty -> ty -> ty, ty))) -> List Lisp.Value -> m Lisp.Value
     makeValueListOp definitions vs = foldl1 or $ map (\(nty ** (op, seed)) => opToValueListOp nty op seed vs) definitions
 
-    export
     primitivesEnv : (Monad m, Catchable m Interpreter.Error) =>
       SortedMap String (List Lisp.Value -> m Lisp.Value)
     primitivesEnv = SortedMap.fromList
       [ ("+", makeValueListOp [(Number.Integer ** ((+), 0)), (Number.Real ** ((+), 0)), (Number.Complex ** ((+), 0))])
       , ("*", makeValueListOp [(Number.Integer ** ((*), 1)), (Number.Real ** ((*), 1)), (Number.Complex ** ((*), 1))])
-      , ("-", foldOrUnaryLispBinOp (opToLispOp (Just (-)) (Just (-)) (Just (-))) $ integer 0)
-      , ("/", foldOrUnaryLispBinOp (opToLispOp Nothing    (Just (/)) (Just (/))) $ integer 1)
-      , ("quotient", lispBinOp $ numMaybeOpToLispOp Number.Integer quotient)
-      , ("remainder", lispBinOp $ numMaybeOpToLispOp Number.Integer remainder)
-      , ("modulo", lispBinOp $ numMaybeOpToLispOp Number.Integer modulo)
+      -- , ("-", foldOrUnaryLispBinOp (opToLispOp (Just (-)) (Just (-)) (Just (-))) $ integer 0)
+      -- , ("/", foldOrUnaryLispBinOp (opToLispOp Nothing    (Just (/)) (Just (/))) $ integer 1)
+      -- , ("quotient", lispBinOp $ numMaybeOpToLispOp Number.Integer quotient)
+      -- , ("remainder", lispBinOp $ numMaybeOpToLispOp Number.Integer remainder)
+      -- , ("modulo", lispBinOp $ numMaybeOpToLispOp Number.Integer modulo)
       ]
 
-    export
-    envLookup : (Monad m, Catchable m Interpreter.Error) =>
-      String -> m (List Lisp.Value -> m Lisp.Value)
-    envLookup {m} name with (SortedMap.lookup name (primitivesEnv {m}))
-      | Nothing = throw $ UnboundVar name
-      | Just x = pure x
+    -- envLookup : Interpreter.Constraint m =>
+    --   String -> m (List Lisp.Value -> m Lisp.Value)
+    -- envLookup {m} name with (SortedMap.lookup name (primitivesEnv {m}))
+    --   | Nothing = throw $ UnboundVar name
+    --   | Just x = pure x
+
+  envLookup : Interpreter.Constraint m =>
+    String -> m Lisp.Value
+  envLookup varName =
+    ask >>= (maybe (throw $ UnboundVar varName) pure . SortedMap.lookup varName)
 
   namespace repl
-    eval : (Monad m, Catchable m Interpreter.Error) =>
-      Lisp.Value -> m Lisp.Value
-    eval (ValueOf Lisp.List [ValueOf Lisp.Atom "quote", ls]) = pure ls
-    eval (ValueOf Lisp.List (ValueOf Lisp.Atom fname :: args)) = do
-      f <- envLookup fname
-      args' <- traverse (assert_total eval) args
-      f args'
-    eval val = pure val
+    inserts : Foldable t => SortedMap k v -> t (k,v) -> SortedMap k v
+    inserts = foldl (flip $ uncurry insert)
 
-private
+    plusMinusNeutral : (x : Nat) -> (y : Nat) -> {auto smaller : LTE x y} -> x + (y - x) = y
+    plusMinusNeutral Z     Z = Refl
+    plusMinusNeutral Z     (S k) = Refl
+    plusMinusNeutral (S k) (S j) {smaller} = let smaller' = fromLteSucc smaller in
+      rewrite eqSucc (k + (j - k)) j $ plusMinusNeutral k j in Refl
+
+    mutual
+      apply : Interpreter.Constraint m =>
+        Lisp.Value -> List Lisp.Value -> m Lisp.Value
+      apply (ValueOf (Lisp.Function argNum False) (DefineFunction closure argIds body)) args
+        with (decEq argNum (length args))
+        | Yes prf =
+            local (const $ inserts closure $ zip argIds $ rewrite prf in fromList args) $
+              assert_total $ eval body
+        | No _ = throw $ NumArgs EQ argNum args
+      apply (ValueOf (Lisp.Function argNum True) (DefineFunction closure (argIds, restId) body)) fullArgs
+        with (isLTE argNum $ length fullArgs)
+        | Yes prf = case
+          Vect.splitAt {m=length fullArgs - argNum} argNum $
+            rewrite plusMinusNeutral argNum (length fullArgs) in
+              Vect.fromList fullArgs of
+          (args, rest) =>
+            local (const $ inserts closure $ (restId, Util.list $ toList rest) :: zip argIds args) $
+              assert_total $ eval body
+        | No _ = throw $ NumArgs GT argNum fullArgs
+      apply v args = throw $ TypeMismatch (Lisp.Function (length args) False) v
+
+      eval : Interpreter.Constraint m =>
+        Lisp.Value -> m Lisp.Value
+      eval (ValueOf Lisp.List [ValueOf Lisp.Atom "quote", ls]) = pure ls
+      eval (ValueOf Lisp.List (ValueOf Lisp.Atom fname :: args)) = do
+        f <- envLookup fname
+        args' <- traverse (assert_total eval) args
+        apply f args'
+      eval val = pure val
+
 test : Lisp.Value -> Either Interpreter.Errors Lisp.Value
-test = runCatchCollect . eval
+test = runCatchCollect . flip runReaderT neutral . eval
 
-private
 examples : List Lisp.Value
 examples =
   [ Util.atom "quote"
