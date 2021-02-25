@@ -141,7 +141,7 @@ namespace Lisp
     show (ValueOf (Lisp.Function argNum True) (DefineFunction _ (argIds, restId) body)) =
       lambdaString (unwords (toList argIds) <+> " . " <+> restId) $
         assert_total $ show body
-    show (ValueOf Lisp.Unspecified ()) = "#<unspecified>"
+    show (ValueOf Lisp.Unspecified _) = "#<unspecified>"
 
   implementation Semigroup Lisp.Value where
     (<+>) x y = ValueOf Lisp.List $ toList x <+> toList y
@@ -259,6 +259,11 @@ namespace Lisp
       (nty : Number.Ty) -> List Lisp.Value -> m (List (Number.representation nty))
     valueListToNumberRepresentationList nty vs = traverse (valueToNum nty) vs
 
+    valueToVariable : (Applicative m, Catchable m Interpreter.Error) =>
+      Lisp.Value -> m String
+    valueToVariable (ValueOf Lisp.Atom var) = pure var
+    valueToVariable v = throw $ TypeMismatch Lisp.Atom v
+
     lispBinOp : (Applicative m, Catchable m Interpreter.Error) =>
       (Lisp.Value -> Lisp.Value -> m Lisp.Value) ->
       List.List Lisp.Value -> m Lisp.Value
@@ -355,16 +360,24 @@ namespace Lisp
         Lisp.Value -> m Lisp.Value
       eval (ValueOf Lisp.List [ValueOf Lisp.Atom "quote", ls]) = pure ls
       eval (ValueOf Lisp.List (ValueOf Lisp.Atom "quote" :: ls)) = throw $ NumArgs EQ 1 ls
-      eval (ValueOf Lisp.List [ValueOf Lisp.Atom "lambda", ValueOf Lisp.Atom var, body]) = do
+      eval (ValueOf Lisp.List [ValueOf Lisp.Atom "lambda", ValueOf Lisp.List vArgIds, body]) = do
+        argIds <- traverse valueToVariable vArgIds
         env <- ask
-        pure $ function $ DefineFunction {hasRest = True} env ([], var) body
-      -- eval (ValueOf Lisp.List [ValueOf Lisp.Atom "lambda", ValueOf Lisp.List vars, body]) = do
-      --   env <- ask
-      --   pure $ function $ DefineFunction {hasRest = False} env vars body
+        pure $ function $ DefineFunction {hasRest = False} env (Vect.fromList argIds) body
+      eval (ValueOf Lisp.List [ValueOf Lisp.Atom "lambda", ValueOf Lisp.DottedList (vArgIds, vRestId), body]) = do
+        (argIds, restId) <- MkPair <$> traverse valueToVariable vArgIds <*> valueToVariable vRestId
+        env <- ask
+        pure $ function $ DefineFunction {hasRest = True} env (Vect.fromList argIds, restId) body
+      eval (ValueOf Lisp.List [ValueOf Lisp.Atom "lambda", vRestId, body]) = do
+        restId <- valueToVariable vRestId
+        env <- ask
+        pure $ function $ DefineFunction {hasRest = True} env ([], restId) body
       eval (ValueOf Lisp.List [ValueOf Lisp.Atom "if", vtest, consequent, alternate]) = do
         ValueOf Lisp.Bool test <- eval vtest
         | v => throw (TypeMismatch Lisp.Bool v)
         pure $ if test then consequent else alternate
+      eval (ValueOf Lisp.List (ValueOf Lisp.Atom "if" :: ls)) =
+        (*>) {a = ()} (throw $ NumArgs EQ 3 ls) (throw $ NumArgs EQ 2 ls)
       eval (ValueOf Lisp.List [ValueOf Lisp.Atom "if", vtest, consequent]) = do
         ValueOf Lisp.Bool test <- eval vtest
         | v => throw (TypeMismatch Lisp.Bool v)
