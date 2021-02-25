@@ -75,6 +75,7 @@ namespace Lisp
     | String
     | Bool
     | Function Nat Bool -- number of arguments, whether it has variable length list argument or not
+    | Unspecified
 
   %runElab deriveEq `{Lisp.Ty}
   mutual -- parsing fails without this
@@ -108,6 +109,7 @@ namespace Lisp
     representation Lisp.String                    = String
     representation Lisp.Bool                      = Bool
     representation (Lisp.Function argNum hasRest) = FunctionDefinition argNum hasRest
+    representation Lisp.Unspecified               = ()
 
   getType : Lisp.Value -> Lisp.Ty
   getType (ValueOf lty _) = lty
@@ -139,6 +141,7 @@ namespace Lisp
     show (ValueOf (Lisp.Function argNum True) (DefineFunction _ (argIds, restId) body)) =
       lambdaString (unwords (toList argIds) <+> " . " <+> restId) $
         assert_total $ show body
+    show (ValueOf Lisp.Unspecified ()) = "#<unspecified>"
 
   implementation Semigroup Lisp.Value where
     (<+>) x y = ValueOf Lisp.List $ toList x <+> toList y
@@ -194,6 +197,9 @@ namespace Lisp
 
     function : FunctionDefinition argNum hasRest -> Lisp.Value
     function {argNum} {hasRest} = ValueOf (Lisp.Function argNum hasRest)
+
+    unspecified : Lisp.Value
+    unspecified = ValueOf Lisp.Unspecified ()
 
   namespace Interpreter
 
@@ -355,9 +361,17 @@ namespace Lisp
       -- eval (ValueOf Lisp.List [ValueOf Lisp.Atom "lambda", ValueOf Lisp.List vars, body]) = do
       --   env <- ask
       --   pure $ function $ DefineFunction {hasRest = False} env vars body
+      eval (ValueOf Lisp.List [ValueOf Lisp.Atom "if", vtest, consequent, alternate]) = do
+        ValueOf Lisp.Bool test <- eval vtest
+        | v => throw (TypeMismatch Lisp.Bool v)
+        pure $ if test then consequent else alternate
+      eval (ValueOf Lisp.List [ValueOf Lisp.Atom "if", vtest, consequent]) = do
+        ValueOf Lisp.Bool test <- eval vtest
+        | v => throw (TypeMismatch Lisp.Bool v)
+        pure $ if test then consequent else unspecified
       eval (ValueOf Lisp.Atom var) = envLookup var
       eval (ValueOf Lisp.List (vFunc :: args)) = do
-        ValueOf (Function _ _) f <- eval vFunc
+        ValueOf (Lisp.Function _ _) f <- eval vFunc
         | v => throw (TypeMismatch (Lisp.Function (length args) False) v)
         args' <- traverse (assert_total eval) args
         apply f args'
