@@ -98,7 +98,7 @@ namespace Lisp
     Env = SortedMap String Lisp.Value
 
     data FunctionDefinition : (argNum : Nat) -> (hasRest : Bool) -> Type where
-      PrimitiveFunction :
+      PrimitiveFunction : {argNum : Nat} -> {hasRest : Bool} ->
         (primitive : if hasRest
           then Vect argNum Lisp.Value -> List Lisp.Value -> Interpreter.Result Lisp.Value
           else Vect argNum Lisp.Value -> Interpreter.Result Lisp.Value
@@ -347,8 +347,8 @@ namespace Lisp
       -- , ("modulo", lispBinOp $ numMaybeOpToLispOp Number.Integer modulo)
       -- ]
 
-  envLookup : Interpreter.Constraint m =>
-    String -> m Lisp.Value
+  envLookup :
+    String -> Interpreter.Result Lisp.Value
   envLookup varName =
     ask >>= (maybe (throw $ UnboundVar varName) pure . SortedMap.lookup varName)
 
@@ -363,13 +363,12 @@ namespace Lisp
       rewrite eqSucc (k + (j - k)) j $ plusMinusNeutral k j in Refl
 
     mutual
-      apply : Interpreter.Constraint m =>
-        FunctionDefinition argNum hasRest -> List Lisp.Value -> m Lisp.Value
-      apply {m} {hasRest = False} {argNum} (PrimitiveFunction f) args
+      apply : FunctionDefinition argNum hasRest -> List Lisp.Value -> Interpreter.Result Lisp.Value
+      apply {argNum} {hasRest = False} (PrimitiveFunction f) args
         with (decEq argNum (length args))
         | Yes prf = f $ rewrite prf in fromList args
         | No _ = throw $ NumArgs EQ argNum args
-      apply {hasRest = True} {argNum} (PrimitiveFunction f) fullArgs
+      apply {argNum} {hasRest = True} (PrimitiveFunction f) fullArgs
         with (isLTE argNum $ length fullArgs)
         | Yes prf =
           let (args, rest) = Vect.splitAt {m=length fullArgs - argNum} argNum $
@@ -377,13 +376,13 @@ namespace Lisp
                 in Vect.fromList fullArgs
           in f args $ toList rest
         | No _ = throw $ NumArgs GT argNum fullArgs
-      apply {hasRest = False} {argNum} (DefineFunction closure argIds body) args
+      apply {argNum} {hasRest = False} (DefineFunction closure argIds body) args
         with (decEq argNum (length args))
         | Yes prf =
             local (const $ inserts closure $ zip argIds $ rewrite prf in fromList args) $
               assert_total $ eval body
         | No _ = throw $ NumArgs EQ argNum args
-      apply {hasRest = True} {argNum} (DefineFunction closure (argIds, restId) body) fullArgs
+      apply {argNum} {hasRest = True} (DefineFunction closure (argIds, restId) body) fullArgs
         with (isLTE argNum $ length fullArgs)
         | Yes prf =
           let (args, rest) = Vect.splitAt {m=length fullArgs - argNum} argNum $
