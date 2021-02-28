@@ -241,6 +241,7 @@ namespace Lisp
 
     numberCastTo : (Applicative m, Catchable m Interpreter.Error) =>
       Number.Ty -> Lisp.Value -> m Lisp.Value
+
     numberCastTo Number.Complex v@(ValueOf (Lisp.Number Number.Complex) _) = pure v
     numberCastTo Number.Complex   (ValueOf (Lisp.Number Number.Real)    x) = pure $ complex $ cast x
     numberCastTo Number.Complex   (ValueOf (Lisp.Number Number.Integer) x) = pure $ complex $ cast x
@@ -254,6 +255,7 @@ namespace Lisp
 
     valueToNum : (Applicative m, Catchable m Interpreter.Error) =>
       (nty : Number.Ty) -> Lisp.Value -> m (Number.representation nty)
+
     valueToNum Number.Complex (ValueOf (Lisp.Number Number.Complex) x) = pure x
     valueToNum Number.Complex (ValueOf (Lisp.Number Number.Real)    x) = pure $ cast x
     valueToNum Number.Complex (ValueOf (Lisp.Number Number.Integer) x) = pure $ cast x
@@ -277,6 +279,7 @@ namespace Lisp
     lispBinOp : (Applicative m, Catchable m Interpreter.Error) =>
       (Lisp.Value -> Lisp.Value -> m Lisp.Value) ->
       List.List Lisp.Value -> m Lisp.Value
+
     lispBinOp f [x, y] = f x y
     lispBinOp _ xs = throw $ NumArgs EQ 2 xs
 
