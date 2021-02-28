@@ -85,7 +85,11 @@ namespace Lisp
     | String
     | Bool
     | Function Nat Bool -- number of arguments, whether it has variable length list argument or not
+<<<<<<< HEAD
     | Unspecified
+=======
+    | Unspecified -- type for unspecified value, such as (if #f "hello")
+>>>>>>> develop
 
   %runElab deriveEq `{Lisp.Ty}
   mutual -- parsing fails without this
@@ -238,10 +242,16 @@ namespace Lisp
 
     Interpreter : Catchable m Interpreter.Error => Type -> Type
     Interpreter {m} = ReaderT Lisp.Env m
+<<<<<<< HEAD
 
     numberCastTo : (Applicative m, Catchable m Interpreter.Error) =>
       Number.Ty -> Lisp.Value -> m Lisp.Value
 
+=======
+
+    numberCastTo : (Applicative m, Catchable m Interpreter.Error) =>
+      Number.Ty -> Lisp.Value -> m Lisp.Value
+>>>>>>> develop
     numberCastTo Number.Complex v@(ValueOf (Lisp.Number Number.Complex) _) = pure v
     numberCastTo Number.Complex   (ValueOf (Lisp.Number Number.Real)    x) = pure $ complex $ cast x
     numberCastTo Number.Complex   (ValueOf (Lisp.Number Number.Integer) x) = pure $ complex $ cast x
@@ -309,16 +319,43 @@ namespace Lisp
       rem <- remainder dividend divisor
       pure $ rem + if dividend * divisor < 0 then divisor else 0
 
+<<<<<<< HEAD
+=======
+    OperatorDefinitions : Nat -> Type
+    OperatorDefinitions len = Vect (S len)
+      (nty : Number.Ty ** let ty = Number.representation nty in (ty -> ty -> ty, ty))
+
+>>>>>>> develop
     opToValueListOp : (Applicative m, Catchable m Interpreter.Error) =>
       (nty : Number.Ty) -> let ty = Number.representation nty in (ty -> ty -> ty) -> ty -> List Lisp.Value -> m Lisp.Value
     opToValueListOp nty op seed vs = Util.number nty . foldl op seed <$> valueListToNumberRepresentationList nty vs
 
     makeNumValueOp :
+<<<<<<< HEAD
       (definitions : Vect (S len)
         (nty : Number.Ty ** let ty = Number.representation nty in (ty -> ty -> ty, ty))) ->
       List Lisp.Value ->
       Interpreter.Result Lisp.Value
     makeNumValueOp definitions vs = foldl1 or $ map (\(nty ** (op, seed)) => opToValueListOp nty op seed vs) definitions
+=======
+      (definitions : OperatorDefinitions len) ->
+      List Lisp.Value -> Interpreter.Result Lisp.Value
+    makeNumValueOp definitions vs = foldl1 or $ map (\(nty ** (op, seed)) =>
+      opToValueListOp nty op seed vs) definitions
+
+    opToUnaryValueListOp : (Applicative m, Catchable m Interpreter.Error) =>
+      (nty : Number.Ty) -> let ty = Number.representation nty in (ty -> ty -> ty) -> ty ->
+      Lisp.Value -> List Lisp.Value -> m Lisp.Value
+    opToUnaryValueListOp nty op seed v [] = (number nty . op seed) <$> valueToNum nty v
+    opToUnaryValueListOp nty op _ v vs = map (number nty) $
+      foldl op <$> valueToNum nty v <*> valueListToNumberRepresentationList nty vs
+
+    makeUnaryNumValueOp :
+      (definitions : OperatorDefinitions len) ->
+      Vect 1 Lisp.Value -> List Lisp.Value -> Interpreter.Result Lisp.Value
+    makeUnaryNumValueOp definitions [v] vs = foldl1 or $ map (\(nty ** (op, seed)) =>
+      opToUnaryValueListOp nty op seed v vs) definitions
+>>>>>>> develop
 
     maybeNumOpToBinValueOp : (nty : Number.Ty) ->
       (let ty = Number.representation nty in ty -> ty -> Maybe ty) ->
@@ -344,6 +381,22 @@ namespace Lisp
           , (Number.Complex ** ((+), 1))
           ]
         )
+<<<<<<< HEAD
+=======
+      , ( "-"
+        , primitiveFunction 1 True $ makeUnaryNumValueOp
+          [ (Number.Integer ** ((-), 0))
+          , (Number.Real    ** ((-), 0))
+          , (Number.Complex ** ((-), 0))
+          ]
+        )
+      , ( "/"
+        , primitiveFunction 1 True $ makeUnaryNumValueOp
+          [ (Number.Real    ** ((/), 1))
+          , (Number.Complex ** ((/), 1))
+          ]
+        )
+>>>>>>> develop
       , ( "quotient"
         , primitiveFunction 2 False $ maybeNumOpToBinValueOp Number.Integer quotient ZeroDivision
         )
@@ -354,6 +407,7 @@ namespace Lisp
         , primitiveFunction 2 False $ maybeNumOpToBinValueOp Number.Integer modulo ZeroDivision
         )
       ]
+<<<<<<< HEAD
       -- [ ("+", makeNumValueOp [(Number.Integer ** ((+), 0)), (Number.Real ** ((+), 0)), (Number.Complex ** ((+), 0))])
       -- , ("*", makeNumValueOp [(Number.Integer ** ((*), 1)), (Number.Real ** ((*), 1)), (Number.Complex ** ((*), 1))])
       -- , ("-", foldOrUnaryLispBinOp (opToLispOp (Just (-)) (Just (-)) (Just (-))) $ integer 0)
@@ -362,6 +416,8 @@ namespace Lisp
       -- , ("remainder", lispBinOp $ numMaybeOpToLispOp Number.Integer remainder)
       -- , ("modulo", lispBinOp $ numMaybeOpToLispOp Number.Integer modulo)
       -- ]
+=======
+>>>>>>> develop
 
   envLookup :
     String -> Interpreter.Result Lisp.Value
@@ -452,7 +508,11 @@ examples =
   , Util.string "+"
   , Util.list [Util.atom "+", Util.list [Util.string "aaa", Util.string "bbb"]]
   , Util.list [Util.atom "+", Util.string "aaa", Util.string "bbb"]
+<<<<<<< HEAD
   , Util.list [Util.atom "+", Util.string "aaa", Util.atom "bbb", Util.string "ccc"]
+=======
+  , Util.list [Util.atom "+", Util.string "aaa", Util.bool False, Util.string "ccc"]
+>>>>>>> develop
   , Util.list [Util.atom "+", Util.integer 3, Util.integer 4]
   , Util.list [Util.atom "+", Util.integer 3]
   , Util.list [Util.atom "+"]
@@ -460,7 +520,11 @@ examples =
   , Util.list [Util.atom "*", Util.integer 4]
   , Util.list [Util.atom "*"]
   , Util.string "-"
+<<<<<<< HEAD
   , Util.list [Util.atom "-", Util.string "aaa", Util.atom "bbb", Util.string "ccc"]
+=======
+  , Util.list [Util.atom "-", Util.string "aaa", Util.bool False, Util.string "ccc"]
+>>>>>>> develop
   , Util.list [Util.atom "-", Util.integer 3, Util.integer 4]
   , Util.list [Util.atom "-", Util.integer 3, Util.integer 4, Util.integer 5]
   , Util.list [Util.atom "-", Util.integer 3]
