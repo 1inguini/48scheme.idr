@@ -97,12 +97,13 @@ namespace Lisp
 
     Env = SortedMap String Lisp.Value
 
+    primitiveTy : Nat -> Bool -> Type
+    primitiveTy argNum True  = Vect argNum Lisp.Value -> List Lisp.Value -> Interpreter.Result Lisp.Value
+    primitiveTy argNum False = Vect argNum Lisp.Value                    -> Interpreter.Result Lisp.Value
+
     data FunctionDefinition : (argNum : Nat) -> (hasRest : Bool) -> Type where
       PrimitiveFunction : {argNum : Nat} -> {hasRest : Bool} ->
-        (primitive : if hasRest
-          then Vect argNum Lisp.Value -> List Lisp.Value -> Interpreter.Result Lisp.Value
-          else Vect argNum Lisp.Value -> Interpreter.Result Lisp.Value
-        ) -> FunctionDefinition argNum hasRest
+        (primitive : primitiveTy argNum hasRest) -> FunctionDefinition argNum hasRest
       DefineFunction :
         (closure : Lisp.Env) ->
         (argIds : if hasRest then (Vect argNum String, String) else Vect argNum String) ->
@@ -207,10 +208,7 @@ namespace Lisp
     function {argNum} {hasRest} = ValueOf (Lisp.Function argNum hasRest)
 
     primitiveFunction : (argNum : Nat) -> (hasRest : Bool) ->
-      (if hasRest
-        then Vect argNum Lisp.Value -> List Lisp.Value -> Interpreter.Result Lisp.Value
-        else Vect argNum Lisp.Value -> Interpreter.Result Lisp.Value
-      ) -> Lisp.Value
+      primitiveTy argNum hasRest -> Lisp.Value
     primitiveFunction argNum hasRest primitive = function {argNum} {hasRest} $ PrimitiveFunction primitive
 
     unspecified : Lisp.Value
@@ -312,34 +310,49 @@ namespace Lisp
       (nty : Number.Ty) -> let ty = Number.representation nty in (ty -> ty -> ty) -> ty -> List Lisp.Value -> m Lisp.Value
     opToValueListOp nty op seed vs = Util.number nty . foldl op seed <$> valueListToNumberRepresentationList nty vs
 
-    makeValueListOp :
+    makeNumValueOp :
       (definitions : Vect (S len)
         (nty : Number.Ty ** let ty = Number.representation nty in (ty -> ty -> ty, ty))) ->
       List Lisp.Value ->
       Interpreter.Result Lisp.Value
-    makeValueListOp definitions vs = foldl1 or $ map (\(nty ** (op, seed)) => opToValueListOp nty op seed vs) definitions
+    makeNumValueOp definitions vs = foldl1 or $ map (\(nty ** (op, seed)) => opToValueListOp nty op seed vs) definitions
+
+    maybeNumOpToBinValueOp : (nty : Number.Ty) ->
+      (let ty = Number.representation nty in ty -> ty -> Maybe ty) ->
+      Interpreter.Error ->
+      Vect 2 Lisp.Value -> Interpreter.Result Lisp.Value
+    maybeNumOpToBinValueOp nty op err [vx, vy] = do
+      (x, y) <- MkPair <$> valueToNum nty vx <*> valueToNum nty vy
+      maybe (throw err) (pure . number nty) $ op x y
 
     primitivesEnv : Env
-      -- (Monad m, Catchable m Interpreter.Error) =>
-      -- SortedMap String (List Lisp.Value -> m Lisp.Value)
     primitivesEnv = SortedMap.fromList
       [ ( "+"
-        , primitiveFunction 0 True $ \_ => makeValueListOp
+        , primitiveFunction 0 True $ \_ => makeNumValueOp
           [ (Number.Integer ** ((+), 0))
           , (Number.Real    ** ((+), 0))
           , (Number.Complex ** ((+), 0))
           ]
         )
       , ( "*"
-        , primitiveFunction 0 True $ \_ => makeValueListOp
+        , primitiveFunction 0 True $ \_ => makeNumValueOp
           [ (Number.Integer ** ((+), 1))
           , (Number.Real    ** ((+), 1))
           , (Number.Complex ** ((+), 1))
           ]
         )
+      , ( "quotient"
+        , primitiveFunction 2 False $ maybeNumOpToBinValueOp Number.Integer quotient ZeroDivision
+        )
+      , ( "remainder"
+        , primitiveFunction 2 False $ maybeNumOpToBinValueOp Number.Integer remainder ZeroDivision
+        )
+      , ( "modulo"
+        , primitiveFunction 2 False $ maybeNumOpToBinValueOp Number.Integer modulo ZeroDivision
+        )
       ]
-      -- [ ("+", makeValueListOp [(Number.Integer ** ((+), 0)), (Number.Real ** ((+), 0)), (Number.Complex ** ((+), 0))])
-      -- , ("*", makeValueListOp [(Number.Integer ** ((*), 1)), (Number.Real ** ((*), 1)), (Number.Complex ** ((*), 1))])
+      -- [ ("+", makeNumValueOp [(Number.Integer ** ((+), 0)), (Number.Real ** ((+), 0)), (Number.Complex ** ((+), 0))])
+      -- , ("*", makeNumValueOp [(Number.Integer ** ((*), 1)), (Number.Real ** ((*), 1)), (Number.Complex ** ((*), 1))])
       -- , ("-", foldOrUnaryLispBinOp (opToLispOp (Just (-)) (Just (-)) (Just (-))) $ integer 0)
       -- , ("/", foldOrUnaryLispBinOp (opToLispOp Nothing    (Just (/)) (Just (/))) $ integer 1)
       -- , ("quotient", lispBinOp $ numMaybeOpToLispOp Number.Integer quotient)
