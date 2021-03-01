@@ -71,11 +71,15 @@ namespace Lisp
 
   namespace Interpreter
     Error : Type
+
+    Result : Type -> Type
+    Result a = {m : Type -> Type} -> (Monad m, Catchable m Interpreter.Error) => m a
+
     interface (MonadReader Lisp.Env m, Catchable m Interpreter.Error) => Constraint (m : Type -> Type) where
     implementation (MonadReader Lisp.Env m, Catchable m Interpreter.Error) => Constraint m where
 
-    Result : Type -> Type
-    Result a = {m : Type -> Type} -> Interpreter.Constraint m => m a
+    EnvResult : Type -> Type
+    EnvResult a = {m : Type -> Type} -> Interpreter.Constraint m => m a
 
   data Ty
     = Atom
@@ -85,11 +89,7 @@ namespace Lisp
     | String
     | Bool
     | Function Nat Bool -- number of arguments, whether it has variable length list argument or not
-<<<<<<< HEAD
-    | Unspecified
-=======
     | Unspecified -- type for unspecified value, such as (if #f "hello")
->>>>>>> develop
 
   %runElab deriveEq `{Lisp.Ty}
   mutual -- parsing fails without this
@@ -205,9 +205,6 @@ namespace Lisp
     bool : Bool -> Lisp.Value
     bool = ValueOf Lisp.Bool
 
-    quote : Lisp.Value -> Lisp.Value
-    quote ls = ValueOf Lisp.List [ValueOf Lisp.Atom "quote", ls]
-
     function : FunctionDefinition argNum hasRest -> Lisp.Value
     function {argNum} {hasRest} = ValueOf (Lisp.Function argNum hasRest)
 
@@ -217,6 +214,9 @@ namespace Lisp
 
     unspecified : Lisp.Value
     unspecified = ValueOf Lisp.Unspecified ()
+
+    quote : Lisp.Value -> Lisp.Value
+    quote ls = list [atom "quote", ls]
 
   namespace Interpreter
 
@@ -242,16 +242,9 @@ namespace Lisp
 
     Interpreter : Catchable m Interpreter.Error => Type -> Type
     Interpreter {m} = ReaderT Lisp.Env m
-<<<<<<< HEAD
 
     numberCastTo : (Applicative m, Catchable m Interpreter.Error) =>
       Number.Ty -> Lisp.Value -> m Lisp.Value
-
-=======
-
-    numberCastTo : (Applicative m, Catchable m Interpreter.Error) =>
-      Number.Ty -> Lisp.Value -> m Lisp.Value
->>>>>>> develop
     numberCastTo Number.Complex v@(ValueOf (Lisp.Number Number.Complex) _) = pure v
     numberCastTo Number.Complex   (ValueOf (Lisp.Number Number.Real)    x) = pure $ complex $ cast x
     numberCastTo Number.Complex   (ValueOf (Lisp.Number Number.Integer) x) = pure $ complex $ cast x
@@ -319,25 +312,15 @@ namespace Lisp
       rem <- remainder dividend divisor
       pure $ rem + if dividend * divisor < 0 then divisor else 0
 
-<<<<<<< HEAD
-=======
     OperatorDefinitions : Nat -> Type
     OperatorDefinitions len = Vect (S len)
       (nty : Number.Ty ** let ty = Number.representation nty in (ty -> ty -> ty, ty))
 
->>>>>>> develop
     opToValueListOp : (Applicative m, Catchable m Interpreter.Error) =>
       (nty : Number.Ty) -> let ty = Number.representation nty in (ty -> ty -> ty) -> ty -> List Lisp.Value -> m Lisp.Value
     opToValueListOp nty op seed vs = Util.number nty . foldl op seed <$> valueListToNumberRepresentationList nty vs
 
     makeNumValueOp :
-<<<<<<< HEAD
-      (definitions : Vect (S len)
-        (nty : Number.Ty ** let ty = Number.representation nty in (ty -> ty -> ty, ty))) ->
-      List Lisp.Value ->
-      Interpreter.Result Lisp.Value
-    makeNumValueOp definitions vs = foldl1 or $ map (\(nty ** (op, seed)) => opToValueListOp nty op seed vs) definitions
-=======
       (definitions : OperatorDefinitions len) ->
       List Lisp.Value -> Interpreter.Result Lisp.Value
     makeNumValueOp definitions vs = foldl1 or $ map (\(nty ** (op, seed)) =>
@@ -355,7 +338,6 @@ namespace Lisp
       Vect 1 Lisp.Value -> List Lisp.Value -> Interpreter.Result Lisp.Value
     makeUnaryNumValueOp definitions [v] vs = foldl1 or $ map (\(nty ** (op, seed)) =>
       opToUnaryValueListOp nty op seed v vs) definitions
->>>>>>> develop
 
     maybeNumOpToBinValueOp : (nty : Number.Ty) ->
       (let ty = Number.representation nty in ty -> ty -> Maybe ty) ->
@@ -381,8 +363,6 @@ namespace Lisp
           , (Number.Complex ** ((+), 1))
           ]
         )
-<<<<<<< HEAD
-=======
       , ( "-"
         , primitiveFunction 1 True $ makeUnaryNumValueOp
           [ (Number.Integer ** ((-), 0))
@@ -396,7 +376,6 @@ namespace Lisp
           , (Number.Complex ** ((/), 1))
           ]
         )
->>>>>>> develop
       , ( "quotient"
         , primitiveFunction 2 False $ maybeNumOpToBinValueOp Number.Integer quotient ZeroDivision
         )
@@ -407,20 +386,9 @@ namespace Lisp
         , primitiveFunction 2 False $ maybeNumOpToBinValueOp Number.Integer modulo ZeroDivision
         )
       ]
-<<<<<<< HEAD
-      -- [ ("+", makeNumValueOp [(Number.Integer ** ((+), 0)), (Number.Real ** ((+), 0)), (Number.Complex ** ((+), 0))])
-      -- , ("*", makeNumValueOp [(Number.Integer ** ((*), 1)), (Number.Real ** ((*), 1)), (Number.Complex ** ((*), 1))])
-      -- , ("-", foldOrUnaryLispBinOp (opToLispOp (Just (-)) (Just (-)) (Just (-))) $ integer 0)
-      -- , ("/", foldOrUnaryLispBinOp (opToLispOp Nothing    (Just (/)) (Just (/))) $ integer 1)
-      -- , ("quotient", lispBinOp $ numMaybeOpToLispOp Number.Integer quotient)
-      -- , ("remainder", lispBinOp $ numMaybeOpToLispOp Number.Integer remainder)
-      -- , ("modulo", lispBinOp $ numMaybeOpToLispOp Number.Integer modulo)
-      -- ]
-=======
->>>>>>> develop
 
   envLookup :
-    String -> Interpreter.Result Lisp.Value
+    String -> Interpreter.EnvResult Lisp.Value
   envLookup varName =
     ask >>= (maybe (throw $ UnboundVar varName) pure . SortedMap.lookup varName)
 
@@ -435,7 +403,7 @@ namespace Lisp
       rewrite eqSucc (k + (j - k)) j $ plusMinusNeutral k j in Refl
 
     mutual
-      apply : FunctionDefinition argNum hasRest -> List Lisp.Value -> Interpreter.Result Lisp.Value
+      apply : FunctionDefinition argNum hasRest -> List Lisp.Value -> Interpreter.EnvResult Lisp.Value
       apply {argNum} {hasRest = False} (PrimitiveFunction f) args
         with (decEq argNum (length args))
         | Yes prf = f $ rewrite prf in fromList args
@@ -498,55 +466,70 @@ namespace Lisp
         apply f args'
       eval val = pure val
 
-test : Lisp.Value -> Either Interpreter.Errors Lisp.Value
-test = runCatchCollect . flip runReaderT primitivesEnv . eval
+test : Lisp.Value -> (String, Either Interpreter.Errors Lisp.Value)
+test v = (show v, runCatchCollect $ flip runReaderT primitivesEnv $ eval v)
 
 examples : List Lisp.Value
 examples =
-  [ Util.string "quote"
-  , Util.quote $ Util.list [Util.string "aaa", Util.string "bbb"]
-  , Util.string "+"
+  [ Util.quote $ Util.list [Util.string "aaa", Util.string "bbb"]
+
   , Util.list [Util.atom "+", Util.list [Util.string "aaa", Util.string "bbb"]]
   , Util.list [Util.atom "+", Util.string "aaa", Util.string "bbb"]
-<<<<<<< HEAD
-  , Util.list [Util.atom "+", Util.string "aaa", Util.atom "bbb", Util.string "ccc"]
-=======
   , Util.list [Util.atom "+", Util.string "aaa", Util.bool False, Util.string "ccc"]
->>>>>>> develop
   , Util.list [Util.atom "+", Util.integer 3, Util.integer 4]
   , Util.list [Util.atom "+", Util.integer 3]
   , Util.list [Util.atom "+"]
-  , Util.string "*"
+
   , Util.list [Util.atom "*", Util.integer 4]
   , Util.list [Util.atom "*"]
-  , Util.string "-"
-<<<<<<< HEAD
-  , Util.list [Util.atom "-", Util.string "aaa", Util.atom "bbb", Util.string "ccc"]
-=======
+
   , Util.list [Util.atom "-", Util.string "aaa", Util.bool False, Util.string "ccc"]
->>>>>>> develop
   , Util.list [Util.atom "-", Util.integer 3, Util.integer 4]
   , Util.list [Util.atom "-", Util.integer 3, Util.integer 4, Util.integer 5]
   , Util.list [Util.atom "-", Util.integer 3]
-  , Util.string "/"
+
   , Util.list [Util.atom "/", Util.integer 3, Util.integer 4]
   , Util.list [Util.atom "/", Util.integer 3, Util.integer 4, Util.integer 5]
   , Util.list [Util.atom "/", Util.integer 3]
-  , Util.string "quotient"
+
   , Util.list [Util.atom "quotient", Util.integer   13,  Util.integer   4]
   , Util.list [Util.atom "quotient", Util.integer (-13), Util.integer   4]
   , Util.list [Util.atom "quotient", Util.integer   13,  Util.integer (-4)]
   , Util.list [Util.atom "quotient", Util.integer (-13), Util.integer (-4)]
-  , Util.string "remainder"
+
   , Util.list [Util.atom "remainder", Util.integer   13,  Util.integer   4]
   , Util.list [Util.atom "remainder", Util.integer (-13), Util.integer   4]
   , Util.list [Util.atom "remainder", Util.integer   13,  Util.integer (-4)]
   , Util.list [Util.atom "remainder", Util.integer (-13), Util.integer (-4)]
-  , Util.string "modulo"
+
   , Util.list [Util.atom "modulo", Util.integer   13,  Util.integer   4]
   , Util.list [Util.atom "modulo", Util.integer (-13), Util.integer   4]
   , Util.list [Util.atom "modulo", Util.integer   13,  Util.integer (-4)]
   , Util.list [Util.atom "modulo", Util.integer (-13), Util.integer (-4)]
+
+  , Util.list
+      [ Util.list [ Util.atom "lambda", Util.atom "x" , Util.atom "x" ]
+      , Util.string "hello", Util.bool True
+      ]
+  , Util.list
+      [ Util.list [Util.atom "lambda", Util.list [Util.atom "x", Util.atom "y"], Util.atom "x"]
+      , Util.string "hello", Util.bool True
+      ]
+  , Util.list
+      [ Util.list [Util.list [Util.atom "lambda", Util.atom "x", Util.atom "y"], Util.atom "x"]
+      , Util.string "hello", Util.bool True, Util.real 12.3]
+  , Util.list
+      [ Util.list [Util.atom "lambda", Util.dottedList [Util.atom "x"] $ Util.atom "y", Util.atom "x"]
+      , Util.string "hello"
+      ]
+  , Util.list
+      [ Util.list [Util.atom "lambda", Util.dottedList [Util.atom "x"] $ Util.atom "y", Util.atom "x"]
+      , Util.string "hello", Util.bool True
+      ]
+  , Util.list
+      [ Util.list [Util.atom "lambda", Util.dottedList [Util.atom "x"] $ Util.atom "y", Util.atom "x"]
+      , Util.string "hello", Util.bool True, Util.real 12.3
+      ]
   ]
 
 -- main : IO ()
