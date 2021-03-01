@@ -71,11 +71,15 @@ namespace Lisp
 
   namespace Interpreter
     Error : Type
+
+    Result : Type -> Type
+    Result a = {m : Type -> Type} -> (Monad m, Catchable m Interpreter.Error) => m a
+
     interface (MonadReader Lisp.Env m, Catchable m Interpreter.Error) => Constraint (m : Type -> Type) where
     implementation (MonadReader Lisp.Env m, Catchable m Interpreter.Error) => Constraint m where
 
-    Result : Type -> Type
-    Result a = {m : Type -> Type} -> Interpreter.Constraint m => m a
+    EnvResult : Type -> Type
+    EnvResult a = {m : Type -> Type} -> Interpreter.Constraint m => m a
 
   data Ty
     = Atom
@@ -201,9 +205,6 @@ namespace Lisp
     bool : Bool -> Lisp.Value
     bool = ValueOf Lisp.Bool
 
-    quote : Lisp.Value -> Lisp.Value
-    quote ls = ValueOf Lisp.List [ValueOf Lisp.Atom "quote", ls]
-
     function : FunctionDefinition argNum hasRest -> Lisp.Value
     function {argNum} {hasRest} = ValueOf (Lisp.Function argNum hasRest)
 
@@ -213,6 +214,9 @@ namespace Lisp
 
     unspecified : Lisp.Value
     unspecified = ValueOf Lisp.Unspecified ()
+
+    quote : Lisp.Value -> Lisp.Value
+    quote ls = list [atom "quote", ls]
 
   namespace Interpreter
 
@@ -384,7 +388,7 @@ namespace Lisp
       ]
 
   envLookup :
-    String -> Interpreter.Result Lisp.Value
+    String -> Interpreter.EnvResult Lisp.Value
   envLookup varName =
     ask >>= (maybe (throw $ UnboundVar varName) pure . SortedMap.lookup varName)
 
@@ -399,7 +403,7 @@ namespace Lisp
       rewrite eqSucc (k + (j - k)) j $ plusMinusNeutral k j in Refl
 
     mutual
-      apply : FunctionDefinition argNum hasRest -> List Lisp.Value -> Interpreter.Result Lisp.Value
+      apply : FunctionDefinition argNum hasRest -> List Lisp.Value -> Interpreter.EnvResult Lisp.Value
       apply {argNum} {hasRest = False} (PrimitiveFunction f) args
         with (decEq argNum (length args))
         | Yes prf = f $ rewrite prf in fromList args
@@ -462,47 +466,70 @@ namespace Lisp
         apply f args'
       eval val = pure val
 
-test : Lisp.Value -> Either Interpreter.Errors Lisp.Value
-test = runCatchCollect . flip runReaderT primitivesEnv . eval
+test : Lisp.Value -> (String, Either Interpreter.Errors Lisp.Value)
+test v = (show v, runCatchCollect $ flip runReaderT primitivesEnv $ eval v)
 
 examples : List Lisp.Value
 examples =
-  [ Util.string "quote"
-  , Util.quote $ Util.list [Util.string "aaa", Util.string "bbb"]
-  , Util.string "+"
+  [ Util.quote $ Util.list [Util.string "aaa", Util.string "bbb"]
+
   , Util.list [Util.atom "+", Util.list [Util.string "aaa", Util.string "bbb"]]
   , Util.list [Util.atom "+", Util.string "aaa", Util.string "bbb"]
   , Util.list [Util.atom "+", Util.string "aaa", Util.bool False, Util.string "ccc"]
   , Util.list [Util.atom "+", Util.integer 3, Util.integer 4]
   , Util.list [Util.atom "+", Util.integer 3]
   , Util.list [Util.atom "+"]
-  , Util.string "*"
+
   , Util.list [Util.atom "*", Util.integer 4]
   , Util.list [Util.atom "*"]
-  , Util.string "-"
+
   , Util.list [Util.atom "-", Util.string "aaa", Util.bool False, Util.string "ccc"]
   , Util.list [Util.atom "-", Util.integer 3, Util.integer 4]
   , Util.list [Util.atom "-", Util.integer 3, Util.integer 4, Util.integer 5]
   , Util.list [Util.atom "-", Util.integer 3]
-  , Util.string "/"
+
   , Util.list [Util.atom "/", Util.integer 3, Util.integer 4]
   , Util.list [Util.atom "/", Util.integer 3, Util.integer 4, Util.integer 5]
   , Util.list [Util.atom "/", Util.integer 3]
-  , Util.string "quotient"
+
   , Util.list [Util.atom "quotient", Util.integer   13,  Util.integer   4]
   , Util.list [Util.atom "quotient", Util.integer (-13), Util.integer   4]
   , Util.list [Util.atom "quotient", Util.integer   13,  Util.integer (-4)]
   , Util.list [Util.atom "quotient", Util.integer (-13), Util.integer (-4)]
-  , Util.string "remainder"
+
   , Util.list [Util.atom "remainder", Util.integer   13,  Util.integer   4]
   , Util.list [Util.atom "remainder", Util.integer (-13), Util.integer   4]
   , Util.list [Util.atom "remainder", Util.integer   13,  Util.integer (-4)]
   , Util.list [Util.atom "remainder", Util.integer (-13), Util.integer (-4)]
-  , Util.string "modulo"
+
   , Util.list [Util.atom "modulo", Util.integer   13,  Util.integer   4]
   , Util.list [Util.atom "modulo", Util.integer (-13), Util.integer   4]
   , Util.list [Util.atom "modulo", Util.integer   13,  Util.integer (-4)]
   , Util.list [Util.atom "modulo", Util.integer (-13), Util.integer (-4)]
+
+  , Util.list
+      [ Util.list [ Util.atom "lambda", Util.atom "x" , Util.atom "x" ]
+      , Util.string "hello", Util.bool True
+      ]
+  , Util.list
+      [ Util.list [Util.atom "lambda", Util.list [Util.atom "x", Util.atom "y"], Util.atom "x"]
+      , Util.string "hello", Util.bool True
+      ]
+  , Util.list
+      [ Util.list [Util.list [Util.atom "lambda", Util.atom "x", Util.atom "y"], Util.atom "x"]
+      , Util.string "hello", Util.bool True, Util.real 12.3]
+  , Util.list
+      [ Util.list [Util.atom "lambda", Util.dottedList [Util.atom "x"] $ Util.atom "y", Util.atom "x"]
+      , Util.string "hello"
+      ]
+  , Util.list
+      [ Util.list [Util.atom "lambda", Util.dottedList [Util.atom "x"] $ Util.atom "y", Util.atom "x"]
+      , Util.string "hello", Util.bool True
+      ]
+  , Util.list
+      [ Util.list [Util.atom "lambda", Util.dottedList [Util.atom "x"] $ Util.atom "y", Util.atom "x"]
+      , Util.string "hello", Util.bool True, Util.real 12.3
+      ]
   ]
 
 -- main : IO ()
