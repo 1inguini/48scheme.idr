@@ -47,9 +47,6 @@ data CatchCollect : (t : Type) -> (a : Type) -> Type where
   Errors : (errs : List t) -> {auto atLeastOne : NonEmpty errs} -> CatchCollect t a
   Pure   : a -> CatchCollect t a
 
--- EitherCollect : Type -> Type -> Type
--- EitherCollect t a = CatchCollect a {t} {m = Either (ts : List t ** NonEmpty ts)}
-
 export
 runCatchCollect : (Applicative m, Catchable m (List t)) => CatchCollect t a -> m a
 runCatchCollect (Pure x)      = pure x
@@ -99,6 +96,36 @@ implementation Catchable (CatchCollect t) t where
   catch     (Errors (err :: _)) f = f err
   catch ccx@(Pure _)            _ = ccx
   throw err = Errors [err]
+
+export
+record CatchCollectT (t : Type) (m : Type -> Type) (a : Type) where
+  constructor CCT
+  runCCT : m (CatchCollect t a)
+
+export
+runCatchCollectT : CatchCollectT t m a -> m (CatchCollect t a)
+runCatchCollectT = runCCT
+
+public export
+implementation Functor f => Functor (CatchCollectT t f) where
+  map f = CCT . map (map f) . runCatchCollectT
+
+public export
+implementation Applicative f => Applicative (CatchCollectT t f) where
+  pure = CCT . pure . pure
+  (<*>) (CCT mccf) (CCT mccx) = CCT $ (<*>) <$> mccf <*> mccx
+
+public export
+implementation Monad f => Monad (CatchCollectT t f) where
+  (>>=) (CCT mccx) f = CCT (do
+    ccx <- mccx
+    case ccx of
+      Errors errs => pure $ Errors errs
+      Pure x      => runCatchCollectT $ f x)
+
+public export
+implementation MonadTrans (CatchCollectT t) where
+  lift = CCT . map Pure
 
 -- export
 -- collect : Successable m t => a -> m a -> CatchCollect t a

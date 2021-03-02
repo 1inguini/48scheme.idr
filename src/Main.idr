@@ -15,6 +15,12 @@ import Scheme.CatchCollect
 %default total
 %language ElabReflection
 
+interface Monad m => MonadIO (m : Type -> Type) where
+  liftIO : IO a -> m a
+
+implementation MonadIO IO where
+  liftIO = id
+
 implementation Semigroup () where
   (<+>) _ _ = ()
 
@@ -75,11 +81,19 @@ namespace Lisp
     Result : Type -> Type
     Result a = {m : Type -> Type} -> (Monad m, Catchable m Interpreter.Error) => m a
 
-    interface (MonadReader Lisp.Env m, Catchable m Interpreter.Error) => Constraint (m : Type -> Type) where
-    implementation (MonadReader Lisp.Env m, Catchable m Interpreter.Error) => Constraint m where
+    IOResult : Type -> Type
+    IOResult a = {m : Type -> Type} -> (MonadIO m, Catchable m Interpreter.Error) => m a
 
-    EnvResult : Type -> Type
-    EnvResult a = {m : Type -> Type} -> Interpreter.Constraint m => m a
+    interface
+      (MonadIO m, MonadReader Lisp.Env m, Catchable m Interpreter.Error) =>
+      Constraint (m : Type -> Type) where
+    implementation
+      (MonadIO m, MonadReader Lisp.Env m, Catchable m Interpreter.Error) =>
+      Constraint m where
+    -- implementation Interpreter.Constraint m => Constraint (IO . m) where
+
+    EvaledResult : Type -> Type
+    EvaledResult a = {m : Type -> Type} -> Interpreter.Constraint m => m a
 
   data Ty
     = Atom
@@ -101,13 +115,15 @@ namespace Lisp
 
     Env = SortedMap String Lisp.Value
 
-    primitiveTy : Nat -> Bool -> Type
-    primitiveTy argNum True  = Vect argNum Lisp.Value -> List Lisp.Value -> Interpreter.Result Lisp.Value
-    primitiveTy argNum False = Vect argNum Lisp.Value                    -> Interpreter.Result Lisp.Value
+    primitiveTy : Nat -> Bool -> (Type -> Type) -> Type
+    primitiveTy argNum True  m = Vect argNum Lisp.Value -> List Lisp.Value -> m Lisp.Value
+    primitiveTy argNum False m = Vect argNum Lisp.Value                    -> m Lisp.Value
 
     data FunctionDefinition : (argNum : Nat) -> (hasRest : Bool) -> Type where
       PrimitiveFunction : {argNum : Nat} -> {hasRest : Bool} ->
-        (primitive : primitiveTy argNum hasRest) -> FunctionDefinition argNum hasRest
+        (primitive : primitiveTy argNum hasRest Interpreter.Result) -> FunctionDefinition argNum hasRest
+      -- PrimitiveIO : {argNum : Nat} -> {hasRest : Bool} ->
+      --   (primitive : primitiveTy argNum hasRest (IO Lisp.Value)) -> FunctionDefinition argNum hasRest
       DefineFunction :
         (closure : Lisp.Env) ->
         (argIds : if hasRest then (Vect argNum String, String) else Vect argNum String) ->
@@ -148,6 +164,7 @@ namespace Lisp
     show (ValueOf Lisp.Bool True) = "#t"
     show (ValueOf Lisp.Bool False) = "#f"
     show (ValueOf (Lisp.Function _ _) (PrimitiveFunction _)) = "#<primitive>"
+    -- show (ValueOf (Lisp.Function _ _) (PrimitiveIO _)) = "#<io_primitive>"
     show (ValueOf (Lisp.Function _ False) (DefineFunction _ argIds body)) =
       lambdaString (unwords $ toList argIds) $
         assert_total $ show body
@@ -209,8 +226,12 @@ namespace Lisp
     function {argNum} {hasRest} = ValueOf (Lisp.Function argNum hasRest)
 
     primitiveFunction : (argNum : Nat) -> (hasRest : Bool) ->
-      primitiveTy argNum hasRest -> Lisp.Value
+      primitiveTy argNum hasRest Interpreter.Result -> Lisp.Value
     primitiveFunction argNum hasRest primitive = function {argNum} {hasRest} $ PrimitiveFunction primitive
+
+    -- primitiveIO : (argNum : Nat) -> (hasRest : Bool) ->
+    --   primitiveTy argNum hasRest (IO Lisp.Value) -> Lisp.Value
+    -- primitiveIO argNum hasRest primitive = function {argNum} {hasRest} $ PrimitiveIO primitive
 
     unspecified : Lisp.Value
     unspecified = ValueOf Lisp.Unspecified ()
@@ -388,7 +409,7 @@ namespace Lisp
       ]
 
   envLookup :
-    String -> Interpreter.EnvResult Lisp.Value
+    String -> Interpreter.EvaledResult Lisp.Value
   envLookup varName =
     ask >>= (maybe (throw $ UnboundVar varName) pure . SortedMap.lookup varName)
 
@@ -403,7 +424,7 @@ namespace Lisp
       rewrite eqSucc (k + (j - k)) j $ plusMinusNeutral k j in Refl
 
     mutual
-      apply : FunctionDefinition argNum hasRest -> List Lisp.Value -> Interpreter.EnvResult Lisp.Value
+      apply : FunctionDefinition argNum hasRest -> List Lisp.Value -> Interpreter.EvaledResult Lisp.Value
       apply {argNum} {hasRest = False} (PrimitiveFunction f) args
         with (decEq argNum (length args))
         | Yes prf = f $ rewrite prf in fromList args
@@ -416,6 +437,18 @@ namespace Lisp
                 in Vect.fromList fullArgs
           in f args $ toList rest
         | No _ = throw $ NumArgs GT argNum fullArgs
+      -- apply {argNum} {hasRest = False} (PrimitiveIO f) args
+      --   with (decEq argNum (length args))
+      --   | Yes prf = f $ rewrite prf in fromList args
+      --   | No _ = throw $ NumArgs EQ argNum args
+      -- apply {argNum} {hasRest = True} (PrimitiveIO f) fullArgs
+      --   with (isLTE argNum $ length fullArgs)
+      --   | Yes prf =
+      --     let (args, rest) = Vect.splitAt {m=length fullArgs - argNum} argNum $
+      --           rewrite plusMinusNeutral argNum (length fullArgs)
+      --           in Vect.fromList fullArgs
+      --     in f args $ toList rest
+      --   | No _ = throw $ NumArgs GT argNum fullArgs
       apply {argNum} {hasRest = False} (DefineFunction closure argIds body) args
         with (decEq argNum (length args))
         | Yes prf =
@@ -466,8 +499,8 @@ namespace Lisp
         apply f args'
       eval val = pure val
 
-test : Lisp.Value -> (String, Either Interpreter.Errors Lisp.Value)
-test v = (show v, runCatchCollect $ flip runReaderT primitivesEnv $ eval v)
+-- test : Lisp.Value -> IO (String, Either Interpreter.Errors Lisp.Value)
+-- test v = MkPair (show v) <$> runCatchCollectT (flip runReaderT primitivesEnv $ eval v)
 
 examples : List Lisp.Value
 examples =
