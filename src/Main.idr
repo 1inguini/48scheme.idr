@@ -1,6 +1,7 @@
 module Main
 
 import Control.Catchable
+import Control.Monad.Trans
 import Control.Monad.Reader
 import Derive.Eq
 import Derive.Show
@@ -14,12 +15,6 @@ import Scheme.CatchCollect
 
 %default total
 %language ElabReflection
-
-interface Monad m => MonadIO (m : Type -> Type) where
-  liftIO : IO a -> m a
-
-implementation MonadIO IO where
-  liftIO = id
 
 implementation Semigroup () where
   (<+>) _ _ = ()
@@ -79,21 +74,15 @@ namespace Lisp
     Error : Type
 
     Result : Type -> Type
-    Result a = {m : Type -> Type} -> (Monad m, Catchable m Interpreter.Error) => m a
+    Result = ReaderT Lisp.Env (CatchCollectT Interpreter.Error IO)
 
-    IOResult : Type -> Type
-    IOResult a = {m : Type -> Type} -> (MonadIO m, Catchable m Interpreter.Error) => m a
-
-    interface
-      (MonadIO m, MonadReader Lisp.Env m, Catchable m Interpreter.Error) =>
-      Constraint (m : Type -> Type) where
-    implementation
-      (MonadIO m, MonadReader Lisp.Env m, Catchable m Interpreter.Error) =>
-      Constraint m where
-    -- implementation Interpreter.Constraint m => Constraint (IO . m) where
-
-    EvaledResult : Type -> Type
-    EvaledResult a = {m : Type -> Type} -> Interpreter.Constraint m => m a
+--     interface
+--       (MonadIO m, MonadReader Lisp.Env m, Catchable m Interpreter.Error) =>
+--       Constraint (m : Type -> Type) where
+--     implementation
+--       (MonadIO m, MonadReader Lisp.Env m, Catchable m Interpreter.Error) =>
+--       Constraint m where
+--     -- implementation MonadIO (ReaderT Lisp.Env (CatchCollectT Interpreter.Error IO)) where
 
   data Ty
     = Atom
@@ -227,7 +216,7 @@ namespace Lisp
 
     primitiveFunction : (argNum : Nat) -> (hasRest : Bool) ->
       primitiveTy argNum hasRest Interpreter.Result -> Lisp.Value
-    primitiveFunction argNum hasRest primitive = function {argNum} {hasRest} $ PrimitiveFunction primitive
+    primitiveFunction argNum hasRest primitive = function $ PrimitiveFunction {argNum} {hasRest} primitive
 
     -- primitiveIO : (argNum : Nat) -> (hasRest : Bool) ->
     --   primitiveTy argNum hasRest (IO Lisp.Value) -> Lisp.Value
@@ -341,9 +330,9 @@ namespace Lisp
       (nty : Number.Ty) -> let ty = Number.representation nty in (ty -> ty -> ty) -> ty -> List Lisp.Value -> m Lisp.Value
     opToValueListOp nty op seed vs = Util.number nty . foldl op seed <$> valueListToNumberRepresentationList nty vs
 
-    makeNumValueOp :
+    makeNumValueOp : (Applicative m, Catchable m Interpreter.Error) =>
       (definitions : OperatorDefinitions len) ->
-      List Lisp.Value -> Interpreter.Result Lisp.Value
+      List Lisp.Value -> m Lisp.Value
     makeNumValueOp definitions vs = foldl1 or $ map (\(nty ** (op, seed)) =>
       opToValueListOp nty op seed vs) definitions
 
@@ -354,16 +343,17 @@ namespace Lisp
     opToUnaryValueListOp nty op _ v vs = map (number nty) $
       foldl op <$> valueToNum nty v <*> valueListToNumberRepresentationList nty vs
 
-    makeUnaryNumValueOp :
+    makeUnaryNumValueOp : (Applicative m, Catchable m Interpreter.Error) =>
       (definitions : OperatorDefinitions len) ->
-      Vect 1 Lisp.Value -> List Lisp.Value -> Interpreter.Result Lisp.Value
+      Vect 1 Lisp.Value -> List Lisp.Value -> m Lisp.Value
     makeUnaryNumValueOp definitions [v] vs = foldl1 or $ map (\(nty ** (op, seed)) =>
       opToUnaryValueListOp nty op seed v vs) definitions
 
-    maybeNumOpToBinValueOp : (nty : Number.Ty) ->
+    maybeNumOpToBinValueOp : (Monad m, Catchable m Interpreter.Error) =>
+      (nty : Number.Ty) ->
       (let ty = Number.representation nty in ty -> ty -> Maybe ty) ->
       Interpreter.Error ->
-      Vect 2 Lisp.Value -> Interpreter.Result Lisp.Value
+      Vect 2 Lisp.Value -> m Lisp.Value
     maybeNumOpToBinValueOp nty op err [vx, vy] = do
       (x, y) <- MkPair <$> valueToNum nty vx <*> valueToNum nty vy
       maybe (throw err) (pure . number nty) $ op x y
@@ -408,8 +398,8 @@ namespace Lisp
         )
       ]
 
-  envLookup :
-    String -> Interpreter.EvaledResult Lisp.Value
+  envLookup : (MonadReader Lisp.Env m, Catchable m Interpreter.Error) =>
+    String -> m Lisp.Value
   envLookup varName =
     ask >>= (maybe (throw $ UnboundVar varName) pure . SortedMap.lookup varName)
 
@@ -424,7 +414,7 @@ namespace Lisp
       rewrite eqSucc (k + (j - k)) j $ plusMinusNeutral k j in Refl
 
     mutual
-      apply : FunctionDefinition argNum hasRest -> List Lisp.Value -> Interpreter.EvaledResult Lisp.Value
+      apply : FunctionDefinition argNum hasRest -> List Lisp.Value -> Interpreter.Result Lisp.Value
       apply {argNum} {hasRest = False} (PrimitiveFunction f) args
         with (decEq argNum (length args))
         | Yes prf = f $ rewrite prf in fromList args
@@ -465,8 +455,7 @@ namespace Lisp
             assert_total $ eval body
         | No _ = throw $ NumArgs GT argNum fullArgs
 
-      eval : Interpreter.Constraint m =>
-        Lisp.Value -> m Lisp.Value
+      eval : Lisp.Value -> Interpreter.Result Lisp.Value
       eval (ValueOf Lisp.List [ValueOf Lisp.Atom "quote", ls]) = pure ls
       eval (ValueOf Lisp.List (ValueOf Lisp.Atom "quote" :: ls)) = throw $ NumArgs EQ 1 ls
       eval (ValueOf Lisp.List [ValueOf Lisp.Atom "lambda", ValueOf Lisp.List vArgIds, body]) = do
@@ -499,8 +488,8 @@ namespace Lisp
         apply f args'
       eval val = pure val
 
--- test : Lisp.Value -> IO (String, Either Interpreter.Errors Lisp.Value)
--- test v = MkPair (show v) <$> runCatchCollectT (flip runReaderT primitivesEnv $ eval v)
+test : Lisp.Value -> IO (String, Either Interpreter.Errors Lisp.Value)
+test v = MkPair (show v) . runCatchCollect <$> runCatchCollectT (flip runReaderT primitivesEnv $ eval v)
 
 examples : List Lisp.Value
 examples =

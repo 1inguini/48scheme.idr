@@ -124,6 +124,15 @@ implementation Monad f => Monad (CatchCollectT t f) where
       Pure x      => runCatchCollectT $ f x)
 
 public export
+implementation Monad m => Catchable (CatchCollectT t m) t where
+  catch (CCT mccx) f = CCT (do
+    ccx <- mccx
+    case ccx of
+      Errors (err :: _) => runCatchCollectT $ f err
+      Pure _ => pure ccx)
+  throw err = CCT $ pure $ Errors [err]
+
+public export
 implementation MonadTrans (CatchCollectT t) where
   lift = CCT . map Pure
 
